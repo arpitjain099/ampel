@@ -8,12 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"regexp"
 	"slices"
 	"strings"
 	"sync"
 
 	keyOpts "github.com/carabiner-dev/command/keys"
+	"github.com/carabiner-dev/command/subject"
 	"github.com/carabiner-dev/hasher"
 	"github.com/fatih/color"
 	intoto "github.com/in-toto/attestation/go/v1"
@@ -32,11 +32,6 @@ import (
 	"github.com/policylabs/ampel/pkg/attest"
 	acontext "github.com/policylabs/ampel/pkg/context"
 	"github.com/policylabs/ampel/pkg/verifier"
-)
-
-var (
-	hashRegexStr = `^(\bsha1\b|\bsha256\b|\bsha512\b|\bsha3\b|\bgitCommit\b):([a-f0-9]+)$`
-	hashRegex    *regexp.Regexp
 )
 
 // attestFormatFor maps a --format value to its canonical attester
@@ -124,7 +119,7 @@ func (o *verifyOptions) AddFlags(cmd *cobra.Command) {
 	)
 
 	cmd.PersistentFlags().StringVar(
-		&o.SubjectHash, "subject-hash", "", "hash to verify",
+		&o.SubjectHash, "subject-hash", "", "hash to verify (algorithm:value, any in-toto DigestSet algorithm)",
 	)
 
 	cmd.PersistentFlags().StringVarP(
@@ -244,37 +239,19 @@ func (o *verifyOptions) AddFlags(cmd *cobra.Command) {
 	applyFlagGroupTemplate(cmd)
 }
 
-func parseHash(estring string) (algo, value string, err error) {
-	if hashRegex == nil {
-		hashRegex = regexp.MustCompile(hashRegexStr)
-	}
-
-	// If the string matches algo:hexValue then we never try to look
-	// for a file. Never.
-	pts := hashRegex.FindStringSubmatch(estring)
-	if pts != nil {
-		algo := strings.ToLower(pts[1])
-		if _, ok := intoto.HashAlgorithms[algo]; !ok {
-			return "", "", errors.New("invalid hash algorithm in subject")
-		}
-		return algo, pts[2], nil
-	}
-	return "", "", fmt.Errorf("error parsing hash string")
-}
-
 // SubjectDescriptor parses the subject string read from the command line
 // and returns a resource descriptor, either by synhesizing it from the specified
 // hash or by hashing a file.
 func (o *verifyOptions) SubjectDescriptor() (attestation.Subject, error) {
 	// If we have a hash, check it and create the descriptor:
 	if o.SubjectHash != "" {
-		algo, val, err := parseHash(o.SubjectHash)
+		algo, val, err := subject.ParseDigest(o.SubjectHash)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("invalid subject hash %q: %w", o.SubjectHash, err)
 		}
 
 		return &intoto.ResourceDescriptor{
-			Digest: map[string]string{algo: val},
+			Digest: map[string]string{string(algo): val},
 		}, nil
 	}
 
@@ -340,7 +317,14 @@ func (o *verifyOptions) Validate() error {
 }
 
 func addVerify(parentCmd *cobra.Command) {
-	opts := verifyOptions{
+	cmd, _ := newVerifyCommand()
+	parentCmd.AddCommand(cmd)
+}
+
+// newVerifyCommand builds the verify command and returns it along with the
+// options it is bound to.
+func newVerifyCommand() (*cobra.Command, *verifyOptions) {
+	opts := &verifyOptions{
 		VerificationOptions: verifier.NewVerificationOptions(),
 		SignerSet:           signerOpts.DefaultSignerSet(),
 	}
@@ -399,21 +383,25 @@ using a collector.
 			}
 
 			if opts.Subject != "" {
-				// Always check the hash first to avoid fooling the hash with a
-				// carfule placed file
-				if _, _, err := parseHash(opts.Subject); err == nil {
+				switch {
+				// Anything shaped like a digest is treated as one, never as a
+				// file, so a carefully placed file cannot shadow a hash.
+				case subject.LooksLikeDigest(opts.Subject):
+					if _, _, err := subject.ParseDigest(opts.Subject); err != nil {
+						return fmt.Errorf("invalid subject hash %q: %w", opts.Subject, err)
+					}
 					if opts.SubjectHash == "" {
 						opts.SubjectHash = opts.Subject
 					} else if opts.SubjectHash != opts.Subject {
 						return fmt.Errorf("subject hash specified twice")
 					}
-				} else if helpers.Exists(opts.Subject) {
+				case helpers.Exists(opts.Subject):
 					if opts.SubjectFile == "" {
 						opts.SubjectFile = opts.Subject
 					} else {
 						return fmt.Errorf("subject file specified twice")
 					}
-				} else {
+				default:
 					return fmt.Errorf("unable to identify subject string %q", opts.Subject)
 				}
 			}
@@ -427,7 +415,7 @@ using a collector.
 	}
 
 	opts.AddFlags(evalCmd)
-	parentCmd.AddCommand(evalCmd)
+	return evalCmd, opts
 }
 
 // Run executes the verify command logic.
@@ -438,7 +426,7 @@ func (opts *verifyOptions) Run() error {
 	}
 
 	// Read the subject from the specified string:
-	subject, err := opts.SubjectDescriptor()
+	subj, err := opts.SubjectDescriptor()
 	if err != nil {
 		return fmt.Errorf("resolving subject string: %w", err)
 	}
@@ -503,7 +491,7 @@ func (opts *verifyOptions) Run() error {
 		defer wg.Done()
 		//nolint:errcheck,gosec // Best-effort cache warming; Verify will re-fetch on miss.
 		ampel.Collector.FetchAttestationsBySubject(
-			context.Background(), []attestation.Subject{subject},
+			context.Background(), []attestation.Subject{subj},
 		)
 	}()
 
@@ -521,7 +509,7 @@ func (opts *verifyOptions) Run() error {
 	}
 
 	// Run the evaluation (attestations should already be cached):
-	results, err := ampel.Verify(context.Background(), &opts.VerificationOptions, policy.PolicyOrSetOrGroup(compileSet, compilePcy, compileGrp), subject)
+	results, err := ampel.Verify(context.Background(), &opts.VerificationOptions, policy.PolicyOrSetOrGroup(compileSet, compilePcy, compileGrp), subj)
 	if err != nil {
 		return fmt.Errorf("running subject verification: %w", err)
 	}

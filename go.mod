@@ -5,7 +5,7 @@ go 1.26.5
 require (
 	cel.dev/cel-go v0.32.0
 	github.com/Masterminds/semver/v3 v3.5.0
-	github.com/carabiner-dev/command v0.3.3
+	github.com/carabiner-dev/command v0.3.4
 	github.com/carabiner-dev/hasher v0.2.4
 	github.com/carabiner-dev/osv v0.1.2
 	github.com/carabiner-dev/termtable v1.1.0
