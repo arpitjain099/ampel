@@ -169,6 +169,59 @@ func TestWhenAfterEvidence(t *testing.T) {
 	}
 }
 
+// A condition sees the evidence the policy collected, so a policy can skip
+// instead of failing when its evidence is absent.
+func TestWhenSeesPredicates(t *testing.T) {
+	t.Parallel()
+	const spdx = "https://spdx.dev/Document"
+	// The fixture is unsigned, so it has to be admitted to count as evidence.
+	withEvidence := func() *VerificationOptions {
+		o := whenTestOptions()
+		o.AttestationFiles = []string{"testdata/wtf-frontend.spdx.json"}
+		o.AdmitUnverified = true
+		return o
+	}
+	typed := func(p *papi.Policy, types ...string) *papi.Policy {
+		p.Predicates = &papi.PredicateSpec{Types: types}
+		return p
+	}
+
+	for _, tc := range []struct {
+		name         string
+		policy       *papi.Policy
+		opts         *VerificationOptions
+		expectStatus string
+	}{
+		{"evidence-present-applies", gatedPolicy("some", "size(predicates) > 0"), withEvidence(), papi.StatusPASS},
+		{"evidence-absent-skips", gatedPolicy("none", "size(predicates) > 0"), whenTestOptions(), papi.StatusSKIP},
+		{"reads-the-predicate-type", gatedPolicy("type", "predicates.exists(p, p.predicate_type == '"+spdx+"')"), withEvidence(), papi.StatusPASS},
+		{"first-predicate", gatedPolicy("first", "predicate.predicate_type == '"+spdx+"'"), withEvidence(), papi.StatusPASS},
+		{"declared-types-narrow-the-evidence", typed(gatedPolicy("other", "size(predicates) > 0"), "https://example.com/other"), withEvidence(), papi.StatusSKIP},
+		{"declared-type-present", typed(gatedPolicy("declared", "size(predicates) == 1"), spdx), withEvidence(), papi.StatusPASS},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ampel, err := New()
+			require.NoError(t, err)
+			res, err := ampel.VerifySubjectWithPolicy(context.Background(), tc.opts, tc.policy, whenTestSubject())
+			require.NoError(t, err)
+			require.Equal(t, tc.expectStatus, res.GetStatus())
+		})
+	}
+
+	t.Run("context-values-still-cannot-see-predicates", func(t *testing.T) {
+		t.Parallel()
+		// A dynamic context value is resolved before any evidence is read.
+		expr := "size(predicates)"
+		p := gatedPolicy("ctx", "true")
+		p.Context = map[string]*papi.ContextVal{"count": {Type: papi.ContextTypeInt, Expression: &expr}}
+		ampel, err := New()
+		require.NoError(t, err)
+		_, err = ampel.VerifySubjectWithPolicy(context.Background(), withEvidence(), p, whenTestSubject())
+		require.ErrorContains(t, err, "context")
+	})
+}
+
 func TestWhenPolicySet(t *testing.T) {
 	t.Parallel()
 	ampel, err := New()

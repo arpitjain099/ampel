@@ -109,31 +109,10 @@ func (dce *defaulCelEvaluator) BuildVariables(
 ) (*map[string]any, error) {
 	// List of variables to return
 	ret := map[string]any{}
-	// Collected predicates
-	preds := []any{}
-	fpreds := []attestation.Predicate{}
-	for _, p := range predicates {
-		// I think we can remove this filter
-		if tenet.Predicates != nil {
-			if len(tenet.GetPredicates().GetTypes()) > 0 && !slices.Contains(tenet.GetPredicates().GetTypes(), string(p.GetType())) {
-				logrus.Debugf("skipping predicate of type %q (not in tenet predicate types)", p.GetType())
-				continue
-			}
-		}
-		d := map[string]any{}
-		if err := json.Unmarshal(p.GetData(), &d); err != nil {
-			return nil, fmt.Errorf("unmarshalling predicate data: %w", err)
-		}
-		predMap := map[string]any{
-			keyPredicateType: string(p.GetType()),
-			keyData:          d,
-		}
-		val, err := structpb.NewValue(predMap)
-		if err != nil {
-			return nil, fmt.Errorf("serializing predicate: %w", err)
-		}
-		preds = append(preds, NewPredicateVal(val, p))
-		fpreds = append(fpreds, p)
+	// Collected predicates, narrowed to the types the tenet declares
+	preds, fpreds, err := predicateVariables(predicates, tenet.GetPredicates().GetTypes())
+	if err != nil {
+		return nil, err
 	}
 	ret[VarNamePredicates] = preds
 	if len(preds) > 0 {
@@ -157,6 +136,35 @@ func (dce *defaulCelEvaluator) BuildVariables(
 		maps.Copy(ret, p.VarValues(evalContext.Policy, evalContext.Subject, fpreds))
 	}
 	return &ret, nil
+}
+
+// predicateVariables builds the `predicates` variable from the predicates,
+// keeping only those of the given types when any are given. It returns the
+// values and the predicates behind them, for the plugins.
+func predicateVariables(predicates []attestation.Predicate, types []string) ([]any, []attestation.Predicate, error) {
+	preds := []any{}
+	fpreds := []attestation.Predicate{}
+	for _, p := range predicates {
+		if len(types) > 0 && !slices.Contains(types, string(p.GetType())) {
+			logrus.Debugf("skipping predicate of type %q (not in tenet predicate types)", p.GetType())
+			continue
+		}
+		d := map[string]any{}
+		if err := json.Unmarshal(p.GetData(), &d); err != nil {
+			return nil, nil, fmt.Errorf("unmarshalling predicate data: %w", err)
+		}
+		predMap := map[string]any{
+			keyPredicateType: string(p.GetType()),
+			keyData:          d,
+		}
+		val, err := structpb.NewValue(predMap)
+		if err != nil {
+			return nil, nil, fmt.Errorf("serializing predicate: %w", err)
+		}
+		preds = append(preds, NewPredicateVal(val, p))
+		fpreds = append(fpreds, p)
+	}
+	return preds, fpreds, nil
 }
 
 func extractSubjectData(subject attestation.Subject) (*structpb.Struct, error) {
@@ -582,10 +590,11 @@ func (dce *defaulCelEvaluator) BuildSelectorVariables(
 }
 
 // BuildExpressionVariables builds the variable set available to standalone
-// expressions (used to resolve dynamic ContextVal expressions). It exposes
-// `subject`, the already-resolved `context` and any plugin-provided globals,
-// but intentionally omits `predicate` and `predicates` since those are not
-// available at context-assembly time.
+// expressions: dynamic ContextVal expressions and when conditions. It exposes
+// `subject`, the already-resolved `context` and any plugin-provided globals.
+// `predicates` and `predicate` are exposed only once the evaluation context
+// carries the collected evidence, which a condition sees and a context
+// expression, resolved before any evidence is read, does not.
 //
 //nolint:gocritic // *map return type matches BuildVariables/BuildSelectorVariables
 func (dce *defaulCelEvaluator) BuildExpressionVariables(
@@ -593,6 +602,19 @@ func (dce *defaulCelEvaluator) BuildExpressionVariables(
 	evalContext *evalcontext.EvaluationContext,
 ) (*map[string]any, error) {
 	ret := map[string]any{}
+
+	var fpreds []attestation.Predicate
+	if evalContext.Predicates != nil {
+		preds, filtered, err := predicateVariables(evalContext.Predicates, nil)
+		if err != nil {
+			return nil, err
+		}
+		ret[VarNamePredicates] = preds
+		if len(preds) > 0 {
+			ret[VarNamePredicate] = preds[0]
+		}
+		fpreds = filtered
+	}
 
 	subdata, err := extractSubjectData(evalContext.Subject)
 	if err != nil {
@@ -607,7 +629,7 @@ func (dce *defaulCelEvaluator) BuildExpressionVariables(
 	ret[VarNameContext] = s
 
 	for _, p := range plugins {
-		maps.Copy(ret, p.VarValues(evalContext.Policy, evalContext.Subject, nil))
+		maps.Copy(ret, p.VarValues(evalContext.Policy, evalContext.Subject, fpreds))
 	}
 
 	return &ret, nil

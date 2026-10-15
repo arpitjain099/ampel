@@ -551,8 +551,10 @@ func (ampel *Ampel) VerifySubjectWithPolicy(
 	}
 
 	// Decide if the policy applies, now that the condition can see the
-	// subject as the tenets would: after the chain and the transformers.
+	// subject and the evidence as the tenets would: after the chain and the
+	// transformers, narrowed to the policy's predicate types.
 	ec.Subject = subject
+	ec.Predicates = policyPredicates(policy, preds)
 	ctx = context.WithValue(ctx, evalcontext.EvaluationContextKey{}, ec)
 	applies, err := ampel.evaluateWhen(ctx, opts, evaluators, policy.GetWhen(), policy.GetMeta().GetRuntime(), evalContext)
 	if err != nil {
@@ -944,6 +946,21 @@ func (ampel *Ampel) evaluateWhen(
 		return false, fmt.Errorf("condition %q must yield a boolean, got %T", when.GetExpression(), out)
 	}
 	return applies, nil
+}
+
+// policyPredicates narrows the predicates to the types the policy declares,
+// all of them when it declares none. The result is never nil: a policy with
+// no evidence sees an empty list.
+func policyPredicates(p *papi.Policy, preds []attestation.Predicate) []attestation.Predicate {
+	types := p.GetPredicates().GetTypes()
+	ret := make([]attestation.Predicate, 0, len(preds))
+	for _, pred := range preds {
+		if len(types) > 0 && !slices.Contains(types, string(pred.GetType())) {
+			continue
+		}
+		ret = append(ret, pred)
+	}
+	return ret
 }
 
 // skipMessage explains why an element was skipped.
