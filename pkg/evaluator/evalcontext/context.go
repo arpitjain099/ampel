@@ -38,5 +38,12 @@ type (
 
 		// Recognized identities for attestation validation.
 		Identities []*sapi.Identity
+
+		// Predicates is the policy's evidence once it is collected: the
+		// predicates admitted by the signer identities, narrowed to the
+		// policy's predicate types. It is nil until then, so an expression
+		// evaluated earlier (a dynamic context value) cannot read it; an
+		// empty slice means the evidence was collected and none survived.
+		Predicates []attestation.Predicate
 	}
 )

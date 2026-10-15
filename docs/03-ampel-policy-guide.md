@@ -479,22 +479,44 @@ never silently exempts a subject.
 
 ### What a condition can see
 
-Conditions are evaluated **before any evidence is fetched**, right after the
-context values in scope are resolved. They therefore run against a smaller
-environment than tenets:
+A policy's condition is decided **after its evidence is collected**: once the
+chain is followed, the attestations gathered and admitted by the signer
+identities, and the transformers applied. It sees the subject exactly as the
+tenets would. A block's condition, which has no evidence of its own, is
+decided before any of the block's policies run.
 
 | Variable | Available | Notes |
 | --- | --- | --- |
 | `context` | yes | The resolved context values in scope: the policy's own, plus those inherited from the `common` block of its PolicySet and PolicyGroup. Every value the expression reads must be declared there; reading an undeclared one fails the evaluation. |
-| `subject` | yes | The subject under evaluation: `name`, `uri`, `digest`. |
+| `subject` | yes | The subject the tenets evaluate: `name`, `uri`, `digest`. For a policy with a chain this is the subject the chain resolved to, not the one the verification was asked about. |
 | runtime plugins | yes | `semver`, `hasher`, `url`, `purl`, `github`, ... |
-| `predicates`, `predicate` | **no** | No attestations have been read yet. |
+| `predicates`, `predicate` | yes | The evidence the policy collected: the attestations about the subject that the signer identities admitted, narrowed to the policy's `predicates.types` when it declares any. `predicate` is the first of them. An empty list means no evidence was found. |
 | `outputs` | **no** | Outputs belong to tenets. |
-| chained subjects | **no** | Chains are resolved after the condition. |
 
-This is deliberate: applicability is a property of what is being verified and
-where, not of the evidence found for it. A policy that must react to the
-contents of an attestation belongs in a tenet.
+Because the condition comes last, a policy that does not apply is skipped
+whatever its evidence looks like. A chain that cannot be completed or
+evidence rejected by the signer identities fails the policy only when the
+policy applies; a skipped policy records the chain it followed and the
+failure it set aside (see below), without failing on it.
+
+Seeing the evidence lets a policy declare that it only applies when its
+evidence exists. A policy without such a condition **fails** when the
+attestations it needs are missing: asking for a verification and finding
+no evidence is a failure, not an exemption. The policy below instead skips
+when there is nothing of its type to check, which is what an alternative
+inside an OR block of a PolicyGroup needs:
+
+```json
+{
+    "id": "check-runs",
+    "when": { "expression": "size(predicates) > 0" },
+    "predicates": { "types": ["https://example.com/check-runs/v1"] },
+    "tenets": [ ... ]
+}
+```
+
+Dynamic context values are resolved before any evidence is read, so their
+expressions cannot see `predicates`.
 
 ### Conditions on referenced policies
 
@@ -512,10 +534,15 @@ can be gated without editing it:
 
 ### Skips in results
 
-A skipped policy's result has status `SKIP` and a single evaluation result,
-`when`, whose assessment records the condition. A skipped block records the
-condition in its error message. The `tty` output marks them with a hollow
-dot.
+A skipped policy's result has status `SKIP` and an evaluation result,
+`when`, whose assessment records the condition. When collecting the policy's
+evidence had already failed it, because its chain could not be completed or
+the signer identities rejected its attestations, a second evaluation result,
+`evidence`, follows: skipped like the first, its assessment names the failure
+and its error keeps the message and guidance. The verdict is unchanged, since
+the policy does not apply, but the record shows that the evidence was not
+verified rather than merely absent. A skipped block records the condition in
+its error message. The `tty` output marks them with a hollow dot.
 
 Skips are recorded, never summarized as a verification. Within a PolicySet,
 skipped policies are left out of the `VerifiedLevels` of a VSA, and a set

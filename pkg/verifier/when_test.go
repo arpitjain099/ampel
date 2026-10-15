@@ -9,6 +9,7 @@ import (
 
 	gointoto "github.com/in-toto/attestation/go/v1"
 	papi "github.com/policylabs/policy/api/v1"
+	sapi "github.com/policylabs/signer/api/v1"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/structpb"
 
@@ -92,7 +93,7 @@ func TestWhenPolicy(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, tc.expectStatus, res.GetStatus())
 			if tc.expectStatus == papi.StatusSKIP {
-				require.Len(t, res.GetEvalResults(), 1, "the skip is recorded as a single evaluation result")
+				require.Len(t, res.GetEvalResults(), 1, "a skip with sound evidence records only the condition")
 				require.Equal(t, "when", res.GetEvalResults()[0].GetId())
 				require.Equal(t, papi.StatusSKIP, res.GetEvalResults()[0].GetStatus())
 				require.Contains(t, res.GetEvalResults()[0].GetAssessment().GetMessage(), "is false")
@@ -100,6 +101,140 @@ func TestWhenPolicy(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A condition is decided after the evidence is collected, so it sees the
+// subject the tenets would see, and a policy that does not apply skips even
+// when collecting its evidence failed.
+func TestWhenAfterEvidence(t *testing.T) {
+	t.Parallel()
+	const (
+		original = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+		chained  = "cdd80609c252ba5336de7033518cfe15f9e466a53c1de14545cc6ec22e56252b"
+	)
+	withEvidence := func() *VerificationOptions {
+		o := whenTestOptions()
+		o.AttestationFiles = []string{"testdata/wtf-frontend.spdx.json"}
+		return o
+	}
+	// chainedPolicy follows the SPDX document to a package digest.
+	chainedPolicy := func(id, expression string) *papi.Policy {
+		p := gatedPolicy(id, expression)
+		p.Chain = []*papi.ChainLink{{Source: &papi.ChainLink_Predicate{Predicate: &papi.ChainedPredicate{
+			Type: "https://spdx.dev/Document", Selector: `"sha256:` + chained + `"`,
+		}}}}
+		return p
+	}
+	// brokenChainPolicy has a link no attestation can satisfy.
+	brokenChainPolicy := func(id, expression string) *papi.Policy {
+		p := gatedPolicy(id, expression)
+		p.Chain = []*papi.ChainLink{{Source: &papi.ChainLink_Predicate{Predicate: &papi.ChainedPredicate{
+			Type: "https://example.com/nonexistent", Selector: `"sha256:` + chained + `"`,
+		}}}}
+		return p
+	}
+	// signedOnlyPolicy admits no unsigned evidence, which is all there is.
+	signedOnlyPolicy := func(id, expression string) *papi.Policy {
+		p := gatedPolicy(id, expression)
+		p.Identities = []*sapi.Identity{{Sigstore: &sapi.IdentitySigstore{Issuer: "https://issuer.example", Identity: "someone@example.com"}}}
+		return p
+	}
+
+	for _, tc := range []struct {
+		name         string
+		policy       *papi.Policy
+		expectStatus string
+		expectChain  int
+		// setAside is what the failure recorded on a skip must say.
+		setAside string
+	}{
+		{"sees-the-chained-subject", chainedPolicy("chained", "subject.digest.sha256 == '"+chained+"'"), papi.StatusPASS, 1, ""},
+		{"original-subject-is-gone-after-the-chain", chainedPolicy("orig", "subject.digest.sha256 == '"+original+"'"), papi.StatusSKIP, 1, ""},
+		{"broken-chain-fails-when-the-policy-applies", brokenChainPolicy("broken-applies", "true"), papi.StatusFAIL, 0, ""},
+		{"broken-chain-skips-when-the-policy-does-not-apply", brokenChainPolicy("broken-skips", "false"), papi.StatusSKIP, 0, "no matching attestations"},
+		{"rejected-evidence-fails-when-the-policy-applies", signedOnlyPolicy("ids-applies", "true"), papi.StatusFAIL, 0, ""},
+		{"rejected-evidence-skips-when-the-policy-does-not-apply", signedOnlyPolicy("ids-skips", "false"), papi.StatusSKIP, 0, "identity validation failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ampel, err := New()
+			require.NoError(t, err)
+			res, err := ampel.VerifySubjectWithPolicy(context.Background(), withEvidence(), tc.policy, whenTestSubject())
+			require.NoError(t, err)
+			require.Equal(t, tc.expectStatus, res.GetStatus())
+			require.Len(t, res.GetChain(), tc.expectChain, "the chain followed is recorded on every outcome")
+			require.Equal(t, original, res.GetSubject().GetDigest()["sha256"], "the result is about the original subject")
+			if tc.expectStatus == papi.StatusSKIP {
+				require.Equal(t, "when", res.GetEvalResults()[0].GetId())
+			}
+			if tc.expectStatus == papi.StatusSKIP && tc.setAside != "" {
+				// The failure the skip set aside is recorded after the
+				// condition, skipped like it, with its message and guidance.
+				require.Len(t, res.GetEvalResults(), 2)
+				evidence := res.GetEvalResults()[1]
+				require.Equal(t, "evidence", evidence.GetId())
+				require.Equal(t, papi.StatusSKIP, evidence.GetStatus())
+				require.Contains(t, evidence.GetAssessment().GetMessage(), tc.setAside)
+				require.Contains(t, evidence.GetError().GetMessage(), tc.setAside)
+				require.NotEmpty(t, evidence.GetError().GetGuidance())
+			} else if tc.expectStatus == papi.StatusSKIP {
+				require.Len(t, res.GetEvalResults(), 1, "nothing was set aside")
+			}
+		})
+	}
+}
+
+// A condition sees the evidence the policy collected, so a policy can skip
+// instead of failing when its evidence is absent.
+func TestWhenSeesPredicates(t *testing.T) {
+	t.Parallel()
+	const spdx = "https://spdx.dev/Document"
+	// The fixture is unsigned, so it has to be admitted to count as evidence.
+	withEvidence := func() *VerificationOptions {
+		o := whenTestOptions()
+		o.AttestationFiles = []string{"testdata/wtf-frontend.spdx.json"}
+		o.AdmitUnverified = true
+		return o
+	}
+	typed := func(p *papi.Policy, types ...string) *papi.Policy {
+		p.Predicates = &papi.PredicateSpec{Types: types}
+		return p
+	}
+
+	for _, tc := range []struct {
+		name         string
+		policy       *papi.Policy
+		opts         *VerificationOptions
+		expectStatus string
+	}{
+		{"evidence-present-applies", gatedPolicy("some", "size(predicates) > 0"), withEvidence(), papi.StatusPASS},
+		{"evidence-absent-skips", gatedPolicy("none", "size(predicates) > 0"), whenTestOptions(), papi.StatusSKIP},
+		{"reads-the-predicate-type", gatedPolicy("type", "predicates.exists(p, p.predicate_type == '"+spdx+"')"), withEvidence(), papi.StatusPASS},
+		{"first-predicate", gatedPolicy("first", "predicate.predicate_type == '"+spdx+"'"), withEvidence(), papi.StatusPASS},
+		{"declared-types-narrow-the-evidence", typed(gatedPolicy("other", "size(predicates) > 0"), "https://example.com/other"), withEvidence(), papi.StatusSKIP},
+		{"declared-type-present", typed(gatedPolicy("declared", "size(predicates) == 1"), spdx), withEvidence(), papi.StatusPASS},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ampel, err := New()
+			require.NoError(t, err)
+			res, err := ampel.VerifySubjectWithPolicy(context.Background(), tc.opts, tc.policy, whenTestSubject())
+			require.NoError(t, err)
+			require.Equal(t, tc.expectStatus, res.GetStatus())
+		})
+	}
+
+	t.Run("context-values-still-cannot-see-predicates", func(t *testing.T) {
+		t.Parallel()
+		// A dynamic context value is resolved before any evidence is read.
+		expr := "size(predicates)"
+		p := gatedPolicy("ctx", "true")
+		p.Context = map[string]*papi.ContextVal{"count": {Type: papi.ContextTypeInt, Expression: &expr}}
+		ampel, err := New()
+		require.NoError(t, err)
+		_, err = ampel.VerifySubjectWithPolicy(context.Background(), withEvidence(), p, whenTestSubject())
+		require.ErrorContains(t, err, "context")
+	})
 }
 
 func TestWhenPolicySet(t *testing.T) {
