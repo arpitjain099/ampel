@@ -987,8 +987,14 @@ func (di *defaultIplementation) ProcessChainedSubjects(
 		return nil, nil, false, fmt.Errorf("processing chained subjects returned more than one subject")
 	}
 
+	// A chain whose selectors pick no subject leaves nothing to verify: the
+	// policy fails on missing evidence, as it does when a link finds no
+	// attestation to read.
 	if len(subjects) == 0 {
-		return nil, nil, false, fmt.Errorf("unable to complete evidence chain, no subject returned")
+		return nil, nil, true, PolicyError{
+			error:    errors.New("unable to complete evidence chain, no subject returned"),
+			Guidance: "the chain selectors returned no subject, make sure the attestations the chain reads point at the subject under evaluation",
+		}
 	}
 
 	// If we got a precomputed chain (from the policy set) it precedes the

@@ -1056,3 +1056,54 @@ func TestIdentityMismatchError(t *testing.T) {
 		require.Contains(t, err.Error(), "got: sigstore::https://issuer::actual")
 	})
 }
+
+// TestProcessChainedSubjectsEmptyChainFails verifies that a chain whose
+// selectors return no subject is a policy failure, not a verifier error: the
+// policy has no evidence to verify, which is what a failed result records.
+func TestProcessChainedSubjectsEmptyChainFails(t *testing.T) {
+	t.Parallel()
+
+	di := &defaultIplementation{}
+	factory := evaluator.Factory{}
+
+	def, err := factory.Get(&eoptions.Default, DefaultVerificationOptions.DefaultEvaluator)
+	require.NoError(t, err)
+	evaluators := map[class.Class]evaluator.Evaluator{
+		defaultEvaluatorClass:                       def,
+		DefaultVerificationOptions.DefaultEvaluator: def,
+	}
+
+	subject := &gointoto.ResourceDescriptor{
+		Name:   "test",
+		Digest: map[string]string{"sha256": "851074691728c479a4c83628de8310eaca792cc7"},
+	}
+
+	// The link reads the SPDX document that is loaded but its selector
+	// yields no subject.
+	policy := &papi.Policy{
+		Chain: []*papi.ChainLink{
+			{
+				Source: &papi.ChainLink_Predicate{
+					Predicate: &papi.ChainedPredicate{
+						Type:     "https://spdx.dev/Document",
+						Selector: `[]`,
+					},
+				},
+			},
+		},
+	}
+
+	opts := DefaultVerificationOptions
+	opts.AttestationFiles = []string{"testdata/wtf-frontend.spdx.json"}
+
+	attestations, err := di.ParseAttestations(t.Context(), &opts, subject)
+	require.NoError(t, err)
+
+	_, _, fail, gotErr := di.ProcessChainedSubjects(
+		t.Context(), &opts, evaluators, nil, policy, nil, subject, attestations,
+	)
+
+	require.ErrorContains(t, gotErr, "no subject returned")
+	require.True(t, fail, "an empty chain is a policy failure")
+	require.IsType(t, PolicyError{}, gotErr) //nolint:testifylint // Checking for type, not value
+}
