@@ -103,6 +103,35 @@ func TestMatch(t *testing.T) {
 		{name: "test", filters: []FilterFunc{}, expectedLength: 0},
 		{name: "vuln", filters: []FilterFunc{WithVulnerability(&vex.Vulnerability{Name: "CVE-1234-56789"})}, expectedLength: 1},
 		{name: "vulnAlias", filters: []FilterFunc{WithVulnerability(&vex.Vulnerability{Name: "CVE-1234-56789", Aliases: []vex.VulnerabilityID{"GHE-1234-56789"}})}, expectedLength: 1},
+		{
+			name: "subcomponent",
+			filters: []FilterFunc{
+				WithSubcomponent(&vex.Subcomponent{Component: vex.Component{
+					Identifiers: map[vex.IdentifierType]string{vex.PURL: "npm:chido@1.2"},
+				}}),
+			},
+			expectedLength: 1,
+		},
+		{
+			name: "vulnAndItsOwnSubcomponent",
+			filters: []FilterFunc{
+				WithVulnerability(&vex.Vulnerability{Name: "CVE-1234-56789"}),
+				WithSubcomponent(&vex.Subcomponent{Component: vex.Component{
+					Identifiers: map[vex.IdentifierType]string{vex.PURL: "golang:github.com/my/package@1.2"},
+				}}),
+			},
+			expectedLength: 1,
+		},
+		{
+			name: "vulnAndAnotherStatementsSubcomponent",
+			filters: []FilterFunc{
+				WithVulnerability(&vex.Vulnerability{Name: "CVE-1234-56789"}),
+				WithSubcomponent(&vex.Subcomponent{Component: vex.Component{
+					Identifiers: map[vex.IdentifierType]string{vex.PURL: "npm:chido@1.2"},
+				}}),
+			},
+			expectedLength: 0,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
