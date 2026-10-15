@@ -464,92 +464,105 @@ func (ampel *Ampel) VerifySubjectWithPolicy(
 		return nil, fmt.Errorf("assembling policy context: %w", err)
 	}
 
-	// Check if the policy applies to this subject before fetching any
-	// evidence. A policy whose condition is false is skipped.
+	// The policy failure found while collecting the evidence, if any. It is
+	// reported only once the condition says the policy applies: a policy that
+	// does not apply skips, whatever its evidence looks like.
+	var failure *papi.Result
+
+	// Process chained subjects. These have access to all the read attestations
+	// even when some will be discarded in the next step. Computing the chain
+	// will use the configured repositories if more attestations are required.
+	chainedSubject, chain, policyFail, err := ampel.impl.ProcessChainedSubjects(
+		ctx, opts, evaluators, ampel.Collector, policy, evalContext, subject, atts,
+	)
+	switch {
+	case err != nil && policyFail:
+		// A chain that cannot be completed fails the policy, if it applies.
+		failure = failPolicyWithError(policy, chain, originalSubject, err)
+	case err != nil:
+		return nil, fmt.Errorf("processing chained subject: %w", err)
+	default:
+		subject = chainedSubject
+	}
+
+	var preds []attestation.Predicate
+	if failure == nil {
+		// Now that we have the right subject from the chain, gather all the
+		// required attestations. Note that this will filter out any from the
+		// command line that don't match the the new subject under test as
+		// determined from the chain resolution.
+		atts, err = ampel.impl.GatherAttestations(ctx, opts, ampel.Collector, policy, subject, atts)
+		if err != nil {
+			return nil, fmt.Errorf("gathering evidence: %w", err)
+		}
+
+		// Resolve any from_context identity bindings against the assembled context
+		// before checking identities, so the resolved value lands inside the identity
+		// (AND-ed) and fails closed on a missing value. Covers the policy's own
+		// identities and the common identities inherited from the context.
+		resolvedIdentities, err := resolvePolicyIdentities(policy.GetIdentities(), evalContext)
+		if err != nil {
+			return nil, fmt.Errorf("resolving policy identities: %w", err)
+		}
+		if len(ec.Identities) > 0 {
+			ec.Identities, err = resolvePolicyIdentities(ec.Identities, evalContext)
+			if err != nil {
+				return nil, fmt.Errorf("resolving common identities: %w", err)
+			}
+			ctx = context.WithValue(ctx, evalcontext.EvaluationContextKey{}, ec)
+		}
+
+		// Check identities to see if the attestations can be admitted
+		// TODO(puerco)
+		// Option: Unsigned statements cause a:fail or b:ignore
+		allow, ids, idErrors, err := ampel.impl.CheckIdentities(ctx, opts, resolvedIdentities, atts)
+		if err != nil {
+			return nil, fmt.Errorf("error validating signer identity: %w", err)
+		}
+
+		if allow {
+			// Filter attestations to those applicable to the subject
+			preds, err = ampel.impl.FilterAttestations(opts, subject, atts, ids)
+			if err != nil {
+				return nil, fmt.Errorf("filtering attestations: %w", err)
+			}
+
+			transformers, err := ampel.impl.BuildTransformers(opts, policy)
+			if err != nil {
+				return nil, fmt.Errorf("building policy transformers: %w", err)
+			}
+
+			// Apply the defined tranformations to the subject and predicates
+			subject, preds, err = ampel.impl.Transform(opts, transformers, policy, subject, preds)
+			if err != nil {
+				return nil, fmt.Errorf("applying transformations: %w", err)
+			}
+		} else {
+			reason := errors.Join(idErrors...)
+			perr := PolicyError{error: errors.New("attestation identity validation failed")}
+			if errors.Is(reason, ErrUnverifiedAttestations) {
+				perr.error = ErrUnverifiedAttestations
+			}
+			if reason != nil {
+				perr.Guidance = reason.Error()
+			}
+			failure = failPolicyWithError(policy, chain, originalSubject, perr)
+		}
+	}
+
+	// Decide if the policy applies, now that the condition can see the
+	// subject as the tenets would: after the chain and the transformers.
+	ec.Subject = subject
+	ctx = context.WithValue(ctx, evalcontext.EvaluationContextKey{}, ec)
 	applies, err := ampel.evaluateWhen(ctx, opts, evaluators, policy.GetWhen(), policy.GetMeta().GetRuntime(), evalContext)
 	if err != nil {
 		return nil, fmt.Errorf("evaluating policy %q condition: %w", policy.GetId(), err)
 	}
 	if !applies {
-		return skipPolicy(policy, originalSubject), nil
+		return skipPolicy(policy, originalSubject, chain), nil
 	}
-
-	// Process chained subjects. These have access to all the read attestations
-	// even when some will be discarded in the next step. Computing the chain
-	// will use the configured repositories if more attestations are required.
-	var chain []*papi.ChainedSubject
-	subject, chain, policyFail, err := ampel.impl.ProcessChainedSubjects(
-		ctx, opts, evaluators, ampel.Collector, policy, evalContext, subject, atts,
-	)
-	if err != nil {
-		// If policyFail is true, then we don't return an error but rather
-		// a policy fail result based on the error
-		if policyFail {
-			return failPolicyWithError(policy, chain, originalSubject, err), nil
-		}
-		return nil, fmt.Errorf("processing chained subject: %w", err)
-	}
-
-	// Now that we have the right subject from the chain, gather all the
-	// required attestations. Note that this will filter out any from the
-	// command line that don't match the the new subject under test as
-	// determined from the chain resolution.
-	atts, err = ampel.impl.GatherAttestations(ctx, opts, ampel.Collector, policy, subject, atts)
-	if err != nil {
-		return nil, fmt.Errorf("gathering evidence: %w", err)
-	}
-
-	// Resolve any from_context identity bindings against the assembled context
-	// before checking identities, so the resolved value lands inside the identity
-	// (AND-ed) and fails closed on a missing value. Covers the policy's own
-	// identities and the common identities inherited from the context.
-	resolvedIdentities, err := resolvePolicyIdentities(policy.GetIdentities(), evalContext)
-	if err != nil {
-		return nil, fmt.Errorf("resolving policy identities: %w", err)
-	}
-	if len(ec.Identities) > 0 {
-		ec.Identities, err = resolvePolicyIdentities(ec.Identities, evalContext)
-		if err != nil {
-			return nil, fmt.Errorf("resolving common identities: %w", err)
-		}
-		ctx = context.WithValue(ctx, evalcontext.EvaluationContextKey{}, ec)
-	}
-
-	// Check identities to see if the attestations can be admitted
-	// TODO(puerco)
-	// Option: Unsigned statements cause a:fail or b:ignore
-	allow, ids, idErrors, err := ampel.impl.CheckIdentities(ctx, opts, resolvedIdentities, atts)
-	if err != nil {
-		return nil, fmt.Errorf("error validating signer identity: %w", err)
-	}
-
-	if !allow {
-		reason := errors.Join(idErrors...)
-		perr := PolicyError{error: errors.New("attestation identity validation failed")}
-		if errors.Is(reason, ErrUnverifiedAttestations) {
-			perr.error = ErrUnverifiedAttestations
-		}
-		if reason != nil {
-			perr.Guidance = reason.Error()
-		}
-		return failPolicyWithError(policy, chain, originalSubject, perr), nil
-	}
-
-	// Filter attestations to those applicable to the subject
-	preds, err := ampel.impl.FilterAttestations(opts, subject, atts, ids)
-	if err != nil {
-		return nil, fmt.Errorf("filtering attestations: %w", err)
-	}
-
-	transformers, err := ampel.impl.BuildTransformers(opts, policy)
-	if err != nil {
-		return nil, fmt.Errorf("building policy transformers: %w", err)
-	}
-
-	// Apply the defined tranformations to the subject and predicates
-	subject, preds, err = ampel.impl.Transform(opts, transformers, policy, subject, preds)
-	if err != nil {
-		return nil, fmt.Errorf("applying transformations: %w", err)
+	if failure != nil {
+		return failure, nil
 	}
 
 	// Evaluate the Policy
@@ -940,8 +953,9 @@ func skipMessage(when *papi.When) string {
 
 // skipPolicy returns the result of a policy whose `when` condition is false.
 // The condition is recorded as its single evaluation result so the results
-// attestation explains the skip.
-func skipPolicy(p *papi.Policy, subject attestation.Subject) *papi.Result {
+// attestation explains the skip, and the chain the evaluation followed to
+// reach the subject the condition saw is kept.
+func skipPolicy(p *papi.Policy, subject attestation.Subject, chain []*papi.ChainedSubject) *papi.Result {
 	now := timestamppb.Now()
 	return &papi.Result{
 		Status:    papi.StatusSKIP,
@@ -953,6 +967,7 @@ func skipPolicy(p *papi.Policy, subject attestation.Subject) *papi.Result {
 		},
 		Meta:    p.GetMeta(),
 		Subject: subjectDescriptor(subject),
+		Chain:   chain,
 		EvalResults: []*papi.EvalResult{{
 			Id:         "when",
 			Status:     papi.StatusSKIP,
