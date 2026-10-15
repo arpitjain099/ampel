@@ -93,7 +93,7 @@ func TestWhenPolicy(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, tc.expectStatus, res.GetStatus())
 			if tc.expectStatus == papi.StatusSKIP {
-				require.Len(t, res.GetEvalResults(), 1, "the skip is recorded as a single evaluation result")
+				require.Len(t, res.GetEvalResults(), 1, "a skip with sound evidence records only the condition")
 				require.Equal(t, "when", res.GetEvalResults()[0].GetId())
 				require.Equal(t, papi.StatusSKIP, res.GetEvalResults()[0].GetStatus())
 				require.Contains(t, res.GetEvalResults()[0].GetAssessment().GetMessage(), "is false")
@@ -145,13 +145,15 @@ func TestWhenAfterEvidence(t *testing.T) {
 		policy       *papi.Policy
 		expectStatus string
 		expectChain  int
+		// setAside is what the failure recorded on a skip must say.
+		setAside string
 	}{
-		{"sees-the-chained-subject", chainedPolicy("chained", "subject.digest.sha256 == '"+chained+"'"), papi.StatusPASS, 1},
-		{"original-subject-is-gone-after-the-chain", chainedPolicy("orig", "subject.digest.sha256 == '"+original+"'"), papi.StatusSKIP, 1},
-		{"broken-chain-fails-when-the-policy-applies", brokenChainPolicy("broken-applies", "true"), papi.StatusFAIL, 0},
-		{"broken-chain-skips-when-the-policy-does-not-apply", brokenChainPolicy("broken-skips", "false"), papi.StatusSKIP, 0},
-		{"rejected-evidence-fails-when-the-policy-applies", signedOnlyPolicy("ids-applies", "true"), papi.StatusFAIL, 0},
-		{"rejected-evidence-skips-when-the-policy-does-not-apply", signedOnlyPolicy("ids-skips", "false"), papi.StatusSKIP, 0},
+		{"sees-the-chained-subject", chainedPolicy("chained", "subject.digest.sha256 == '"+chained+"'"), papi.StatusPASS, 1, ""},
+		{"original-subject-is-gone-after-the-chain", chainedPolicy("orig", "subject.digest.sha256 == '"+original+"'"), papi.StatusSKIP, 1, ""},
+		{"broken-chain-fails-when-the-policy-applies", brokenChainPolicy("broken-applies", "true"), papi.StatusFAIL, 0, ""},
+		{"broken-chain-skips-when-the-policy-does-not-apply", brokenChainPolicy("broken-skips", "false"), papi.StatusSKIP, 0, "no matching attestations"},
+		{"rejected-evidence-fails-when-the-policy-applies", signedOnlyPolicy("ids-applies", "true"), papi.StatusFAIL, 0, ""},
+		{"rejected-evidence-skips-when-the-policy-does-not-apply", signedOnlyPolicy("ids-skips", "false"), papi.StatusSKIP, 0, "identity validation failed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -164,6 +166,19 @@ func TestWhenAfterEvidence(t *testing.T) {
 			require.Equal(t, original, res.GetSubject().GetDigest()["sha256"], "the result is about the original subject")
 			if tc.expectStatus == papi.StatusSKIP {
 				require.Equal(t, "when", res.GetEvalResults()[0].GetId())
+			}
+			if tc.expectStatus == papi.StatusSKIP && tc.setAside != "" {
+				// The failure the skip set aside is recorded after the
+				// condition, skipped like it, with its message and guidance.
+				require.Len(t, res.GetEvalResults(), 2)
+				evidence := res.GetEvalResults()[1]
+				require.Equal(t, "evidence", evidence.GetId())
+				require.Equal(t, papi.StatusSKIP, evidence.GetStatus())
+				require.Contains(t, evidence.GetAssessment().GetMessage(), tc.setAside)
+				require.Contains(t, evidence.GetError().GetMessage(), tc.setAside)
+				require.NotEmpty(t, evidence.GetError().GetGuidance())
+			} else if tc.expectStatus == papi.StatusSKIP {
+				require.Len(t, res.GetEvalResults(), 1, "nothing was set aside")
 			}
 		})
 	}

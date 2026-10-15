@@ -561,7 +561,7 @@ func (ampel *Ampel) VerifySubjectWithPolicy(
 		return nil, fmt.Errorf("evaluating policy %q condition: %w", policy.GetId(), err)
 	}
 	if !applies {
-		return skipPolicy(policy, originalSubject, chain), nil
+		return skipPolicy(policy, originalSubject, chain, failure), nil
 	}
 	if failure != nil {
 		return failure, nil
@@ -969,12 +969,16 @@ func skipMessage(when *papi.When) string {
 }
 
 // skipPolicy returns the result of a policy whose `when` condition is false.
-// The condition is recorded as its single evaluation result so the results
+// The condition is recorded as its first evaluation result so the results
 // attestation explains the skip, and the chain the evaluation followed to
-// reach the subject the condition saw is kept.
-func skipPolicy(p *papi.Policy, subject attestation.Subject, chain []*papi.ChainedSubject) *papi.Result {
+// reach the subject the condition saw is kept. When collecting the evidence
+// failed the policy before the condition was decided, that failure, set
+// aside because the policy does not apply, is recorded as a second
+// evaluation result named "evidence", skipped like the first: the verdict
+// is unchanged but the reader learns the evidence was not verified.
+func skipPolicy(p *papi.Policy, subject attestation.Subject, chain []*papi.ChainedSubject, setAside *papi.Result) *papi.Result {
 	now := timestamppb.Now()
-	return &papi.Result{
+	res := &papi.Result{
 		Status:    papi.StatusSKIP,
 		DateStart: now,
 		DateEnd:   now,
@@ -992,6 +996,18 @@ func skipPolicy(p *papi.Policy, subject attestation.Subject, chain []*papi.Chain
 			Assessment: &papi.Assessment{Message: skipMessage(p.GetWhen())},
 		}},
 	}
+	// The failure's evaluation results all carry the same error, one per
+	// tenet, so the first one says it all.
+	if ers := setAside.GetEvalResults(); len(ers) > 0 && ers[0].GetError() != nil {
+		res.EvalResults = append(res.EvalResults, &papi.EvalResult{
+			Id:         "evidence",
+			Status:     papi.StatusSKIP,
+			Date:       now,
+			Assessment: &papi.Assessment{Message: "Evidence not verified: " + ers[0].GetError().GetMessage()},
+			Error:      ers[0].GetError(),
+		})
+	}
+	return res
 }
 
 // allPoliciesSkipped reports if there are results and every one is a skip.
