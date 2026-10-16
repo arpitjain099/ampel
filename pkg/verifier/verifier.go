@@ -118,24 +118,101 @@ func (ampel *Ampel) verify(
 		if err != nil {
 			return nil, err
 		}
-		return res, nil
+		return rootResults(opts, res), nil
 	case *papi.PolicySet:
 		rs, err := ampel.VerifySubjectWithPolicySet(ctx, opts, v, subject)
 		if err != nil {
 			return nil, fmt.Errorf("evaluating policy set: %w", err)
 		}
-		return rs, nil
+		return rootResults(opts, rs), nil
 	case *papi.PolicyGroup:
 		rs, err := ampel.VerifySubjectWithPolicyGroup(ctx, opts, v, subject)
 		if err != nil {
 			return nil, fmt.Errorf("evaluating policy group: %w", err)
 		}
-		return rs, nil
+		return rootResults(opts, rs), nil
 	case []*papi.PolicySet:
-		return ampel.verifyPolicySets(ctx, opts, v, subject)
+		rs, err := ampel.verifyPolicySets(ctx, opts, v, subject)
+		if err != nil {
+			return nil, err
+		}
+		return rootResults(opts, rs), nil
 	default:
 		return nil, fmt.Errorf("did not get a policy or policy set")
 	}
+}
+
+// ErrAllSkipped is the failure of a root evaluation in which nothing was
+// verified: the policy the verifier was asked to evaluate did not apply to
+// the subject, or every member of the set or group skipped. It is the
+// message of the failed result's error, so a reader of the results can tell
+// this failure from any other (see AllSkipped).
+var ErrAllSkipped = errors.New("everything was skipped, nothing was verified")
+
+// allSkippedGuidance is the guidance of the failure, with how to allow it.
+const allSkippedGuidance = "The verifier was asked to verify the subject and no policy applied to it. " +
+	"Set AllowSkip (--allow-skip in the CLI) to accept a skipped result instead."
+
+// rootResults applies the root rule to the results of the material the
+// verifier was asked to evaluate: unless skips are allowed, a result in
+// which nothing was verified is a failure. Nested results are not touched,
+// so the record still shows what skipped and why. The skipped members keep
+// their evaluation results, each naming its reason ("when" for a false
+// condition), which is what a later rule distinguishing between reasons
+// would read.
+func rootResults(opts *VerificationOptions, results papi.Results) papi.Results {
+	if opts.AllowSkip || results.GetStatus() != papi.StatusSKIP {
+		return results
+	}
+	now := timestamppb.Now()
+	switch r := results.(type) {
+	case *papi.Result:
+		r.Status = papi.StatusFAIL
+		r.DateEnd = now
+		r.EvalResults = append(r.EvalResults, &papi.EvalResult{
+			Id:     "skip",
+			Status: papi.StatusFAIL,
+			Date:   now,
+			Error: &papi.Error{
+				Message:  ErrAllSkipped.Error(),
+				Guidance: "The policy did not apply to the subject. " + allSkippedGuidance,
+			},
+		})
+	case *papi.ResultSet:
+		r.Status = papi.StatusFAIL
+		r.DateEnd = now
+		r.Error = &papi.Error{
+			Message:  ErrAllSkipped.Error(),
+			Guidance: "Every policy and group of the set skipped. " + allSkippedGuidance,
+		}
+	case *papi.ResultGroup:
+		r.Status = papi.StatusFAIL
+		r.DateEnd = now
+		r.Error = ErrAllSkipped.Error() + ": every block of the group skipped"
+	}
+	return results
+}
+
+// AllSkipped reports whether results are the failure of a root evaluation
+// in which nothing was verified, as recorded by the verifier when skips are
+// not allowed.
+func AllSkipped(results papi.Results) bool {
+	if results.GetStatus() != papi.StatusFAIL {
+		return false
+	}
+	switch r := results.(type) {
+	case *papi.Result:
+		for _, er := range r.GetEvalResults() {
+			if er.GetId() == "skip" && er.GetError().GetMessage() == ErrAllSkipped.Error() {
+				return true
+			}
+		}
+	case *papi.ResultSet:
+		return r.GetError().GetMessage() == ErrAllSkipped.Error()
+	case *papi.ResultGroup:
+		return strings.HasPrefix(r.GetError(), ErrAllSkipped.Error())
+	}
+	return false
 }
 
 // verifyPolicySets verifies a subject against several policy sets. Each set
