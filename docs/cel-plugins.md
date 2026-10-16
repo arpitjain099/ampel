@@ -348,7 +348,7 @@ answer for the engine that is evaluating the policy.
 | `ampel.olderThan(v)`           | `bool`      | The engine is older than version `v`.                                  |
 | `ampel.atLeast(v)`             | `bool`      | The engine is version `v` or newer.                                    |
 | `ampel.satisfies(c)`           | `bool`      | The engine's version satisfies constraint `c`, as in `>= 1.4, < 2`.    |
-| `ampel.started()`              | `timestamp` | When the verification run started.                                     |
+| `ampel.started()`              | `timestamp` | When the verification run started: the same instant for every policy of a run. |
 | `ampel.runtime()`              | `string`    | The runtime evaluating the policy, `cel@v1`.                           |
 | `ampel.plugins()`              | `list`      | The identities of the plugins the runtime loaded, `semver@v0`, ...     |
 | `ampel.hasPlugin(name)`        | `bool`      | Whether a plugin is loaded, named with or without its version.         |

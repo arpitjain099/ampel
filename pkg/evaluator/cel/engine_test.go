@@ -6,10 +6,12 @@ package cel
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/policylabs/ampel/pkg/evaluator/options"
+	"github.com/policylabs/ampel/pkg/evaluator/plugins/engine"
 )
 
 // The ampel object is always in the environment and describes the
@@ -49,4 +51,29 @@ func TestEngineObject(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, []string{"ampel@v0"}, got)
 	})
+}
+
+// The run's start, when the options carry it, is what ampel.started()
+// answers, and stamping it never touches the plugin's own engine, which
+// every evaluation shares.
+func TestEngineRunStart(t *testing.T) {
+	t.Parallel()
+	e, err := New()
+	require.NoError(t, err)
+	started := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+
+	opts := options.Default
+	opts.RunStarted = started
+	got, err := e.EvalExpression(context.Background(), &opts, `ampel.started() == timestamp("2026-10-16T12:00:00Z")`)
+	require.NoError(t, err)
+	require.Equal(t, true, got)
+
+	// Without a run start the engine answers its own, which is now-ish.
+	plain := options.Default
+	got, err = e.EvalExpression(context.Background(), &plain, `ampel.started() > timestamp("2026-10-16T12:00:00Z")`)
+	require.NoError(t, err)
+	require.Equal(t, true, got)
+
+	own := e.Plugins["ampel"].VarValues(nil, nil, nil)["ampel"].(*engine.Engine) //nolint:errcheck,forcetypeassert // the plugin binds its engine
+	require.NotEqual(t, started, own.Started, "the plugin's engine is shared and must not be stamped")
 }

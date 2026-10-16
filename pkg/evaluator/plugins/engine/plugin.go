@@ -16,6 +16,9 @@ import (
 // require the `ampel` object.
 var Identity = class.MustParseIdentity("ampel@v0")
 
+// VarName is the name of the variable the engine object is bound to.
+const VarName = "ampel"
+
 // Plugin wires the engine object into ampel's CEL evaluator.
 type Plugin struct {
 	Engine *Engine
@@ -46,7 +49,7 @@ func (p *Plugin) Library() cel.EnvOption {
 
 func (p *Plugin) VarValues(_ *papi.Policy, _ attestation.Subject, _ []attestation.Predicate) map[string]any {
 	return map[string]any{
-		"ampel": p.Engine,
+		VarName: p.Engine,
 	}
 }
 

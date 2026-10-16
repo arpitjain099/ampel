@@ -257,7 +257,7 @@ func (e *Engine) CompileOptions() []cel.EnvOption {
 	ret = append(ret,
 		cel.Types(EngineType),
 		cel.CustomTypeAdapter(&TypeAdapter{}),
-		cel.Variable("ampel", EngineType),
+		cel.Variable(VarName, EngineType),
 	)
 	return append(ret, funcs...)
 }

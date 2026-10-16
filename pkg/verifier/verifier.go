@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	gointoto "github.com/in-toto/attestation/go/v1"
 	"github.com/nozzle/throttler"
@@ -92,6 +93,13 @@ func isExplicitEvidence(ctx context.Context, env attestation.Envelope) bool {
 func (ampel *Ampel) Verify(
 	ctx context.Context, opts *VerificationOptions, policy any, subject attestation.Subject,
 ) (papi.Results, error) {
+	// Stamp the run's start once, on a copy so the caller's options stay
+	// theirs, so every policy reads the same ampel.started().
+	if opts.RunStarted.IsZero() {
+		run := *opts
+		run.RunStarted = time.Now()
+		opts = &run
+	}
 	results, err := ampel.verify(ctx, opts, policy, subject)
 	if err != nil {
 		return nil, err

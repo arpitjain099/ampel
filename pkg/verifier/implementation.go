@@ -33,7 +33,6 @@ import (
 	"github.com/policylabs/ampel/pkg/evaluator/cel"
 	"github.com/policylabs/ampel/pkg/evaluator/class"
 	"github.com/policylabs/ampel/pkg/evaluator/evalcontext"
-	"github.com/policylabs/ampel/pkg/evaluator/options"
 	"github.com/policylabs/ampel/pkg/transformer"
 )
 
@@ -1258,7 +1257,9 @@ func (di *defaultIplementation) VerifySubject(
 		Context: evalContextValuesStruct,
 	}
 
-	evalOpts := &options.EvaluatorOptions{}
+	// The tenets evaluate with the run's evaluator options, which carry
+	// what the run stamped on them, such as its start.
+	evalOpts := &opts.EvaluatorOptions
 
 	errs := []error{}
 
