@@ -566,8 +566,11 @@ result attestation.
 
 `ampel verify --allow-skip` restores the skipped answer: the root reports
 `SKIP` and the command exits 0, like on a `PASS`, for pipelines that treat
-"nothing applied" as acceptable. The ampel results attestation records the
-skip; a VSA or SVR cannot, since neither has anything but PASSED and FAILED
+"nothing applied" as acceptable. Adding `--fail-skip` keeps the record as a
+skip but exits non-zero on it, for a script that must block on "nothing
+applied" without attesting it as a failure; without `--allow-skip` the flag
+has no effect, since the run never answers `SKIP`. The ampel results
+attestation records the skip; a VSA or SVR cannot, since neither has anything but PASSED and FAILED
 to say. Every output format reports which statuses it can render, and
 `ampel verify` asks before evaluating: `--allow-skip` refuses to run with
 `--format vsa` or `svr`, or with `--attest-results --attest-format vsa` or
