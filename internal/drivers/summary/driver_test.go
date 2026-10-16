@@ -48,6 +48,13 @@ func TestRenderResultSet(t *testing.T) {
 	t.Parallel()
 	pass, fail, soft := testPolicies(t)
 	setRef := &papi.PolicyRef{Id: "test-set"}
+	skipped := &papi.Result{
+		Status: papi.StatusSKIP, Policy: &papi.PolicyRef{Id: "pol-skip"},
+		EvalResults: []*papi.EvalResult{{
+			Id: "when", Status: papi.StatusSKIP,
+			Assessment: &papi.Assessment{Message: "Skipped: condition \"false\" is false"},
+		}},
+	}
 
 	for _, tc := range []struct {
 		name   string
@@ -88,6 +95,26 @@ func TestRenderResultSet(t *testing.T) {
 			"set-fail-and-softfail",
 			&papi.ResultSet{Status: papi.StatusFAIL, PolicySet: setRef, Results: []*papi.Result{soft, fail}},
 			"🔴 test-set: pol-fail: build point mismatch (1 of 2 policies failed)\n",
+		},
+		// Skips are neither failures nor soft failures.
+		{
+			"set-pass-with-skips",
+			&papi.ResultSet{Status: papi.StatusPASS, PolicySet: setRef, Results: []*papi.Result{pass, skipped, skipped}},
+			"🟢 test-set: 1 of 3 policies passed, 2 skipped\n",
+		},
+		{
+			"set-all-skipped-allowed",
+			&papi.ResultSet{Status: papi.StatusSKIP, PolicySet: setRef, Results: []*papi.Result{skipped, skipped}},
+			"🟡 test-set: all 2 policies skipped\n",
+		},
+		// Nothing verified at the root: the set's own error is the headline.
+		{
+			"set-all-skipped-not-allowed",
+			&papi.ResultSet{
+				Status: papi.StatusFAIL, PolicySet: setRef, Results: []*papi.Result{skipped, skipped},
+				Error: &papi.Error{Message: "everything was skipped, nothing was verified"},
+			},
+			"🔴 test-set: everything was skipped, nothing was verified (2 of 2 policies skipped)\n",
 		},
 		{
 			"empty-set",

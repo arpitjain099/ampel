@@ -82,8 +82,9 @@ var verifyFlagGroups = []flagGroup{
 }
 
 type verifyOptions struct {
-	// FailSkip makes the command exit non-zero when the evaluation result
-	// is SKIP, that is, when no policy applied to the subject.
+	// FailSkip is the hidden predecessor of --allow-skip. It defaults to
+	// true, the behavior the verifier now has on its own; --fail-skip=false
+	// allows skips like --allow-skip does.
 	FailSkip bool
 
 	verifier.VerificationOptions
@@ -175,8 +176,13 @@ func (o *verifyOptions) AddFlags(cmd *cobra.Command) {
 	)
 
 	cmd.PersistentFlags().BoolVar(
-		&o.FailSkip, "fail-skip", false, "also set a non-zero exit code when the result is SKIP (no policy applied to the subject)",
+		&o.AllowSkip, "allow-skip", false, "answer SKIP instead of failing when no policy applied to the subject",
 	)
+
+	cmd.PersistentFlags().BoolVar(
+		&o.FailSkip, "fail-skip", true, "fail when no policy applied to the subject (superseded by --allow-skip)",
+	)
+	_ = cmd.PersistentFlags().MarkHidden("fail-skip") //nolint:errcheck // the flag is defined right above
 
 	cmd.PersistentFlags().StringSliceVar(
 		&o.Policies, "pid", []string{}, "list of policy IDs to evaluate from a set (defaults to all)",
@@ -274,6 +280,11 @@ func (o *verifyOptions) LoadPublicKeys() error {
 }
 
 func (o *verifyOptions) Validate() error {
+	// The hidden --fail-skip=false means what --allow-skip means.
+	if !o.FailSkip {
+		o.AllowSkip = true
+	}
+
 	errs := []error{
 		o.VerificationOptions.Validate(),
 	}
@@ -665,18 +676,8 @@ func parsePolicyKeys(opt *verifyOptions) ([]key.PublicKeyProvider, error) {
 
 // exitNonZero reports if the command must exit with a non-zero code for the
 // given evaluation status. --exit-code=false disables result-based exit
-// codes altogether; with it on, FAIL always exits non-zero and SKIP does
-// too when --fail-skip treats "no policy applied" as a failure.
+// codes altogether; with it on, FAIL exits non-zero. A SKIP only reaches
+// here when --allow-skip asked for it, so it exits zero like a PASS.
 func (opts *verifyOptions) exitNonZero(status string) bool {
-	if !opts.SetExitCode {
-		return false
-	}
-	switch status {
-	case papi.StatusFAIL:
-		return true
-	case papi.StatusSKIP:
-		return opts.FailSkip
-	default:
-		return false
-	}
+	return opts.SetExitCode && status == papi.StatusFAIL
 }

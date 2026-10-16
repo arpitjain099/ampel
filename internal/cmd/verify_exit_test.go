@@ -16,22 +16,45 @@ func TestExitNonZero(t *testing.T) {
 		name     string
 		status   string
 		exitCode bool
-		failSkip bool
 		expect   bool
 	}{
-		{"pass", papi.StatusPASS, true, true, false},
-		{"softfail", papi.StatusSOFTFAIL, true, true, false},
-		{"fail-with-exit-code", papi.StatusFAIL, true, false, true},
-		{"fail-without-exit-code", papi.StatusFAIL, false, true, false},
-		{"skip-by-default", papi.StatusSKIP, true, false, false},
-		{"skip-with-fail-skip", papi.StatusSKIP, true, true, true},
-		{"exit-code-off-disables-fail-skip", papi.StatusSKIP, false, true, false},
+		{"pass", papi.StatusPASS, true, false},
+		{"softfail", papi.StatusSOFTFAIL, true, false},
+		{"fail-with-exit-code", papi.StatusFAIL, true, true},
+		{"fail-without-exit-code", papi.StatusFAIL, false, false},
+		// A SKIP is only answered when --allow-skip asked for it.
+		{"allowed-skip", papi.StatusSKIP, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			opts := &verifyOptions{}
+			opts.SetExitCode = tc.exitCode
+			require.Equal(t, tc.expect, opts.exitNonZero(tc.status))
+		})
+	}
+}
+
+// The hidden --fail-skip keeps working: off, it allows skips.
+func TestFailSkipMapsToAllowSkip(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name            string
+		failSkip, allow bool
+		expect          bool
+	}{
+		{"defaults", true, false, false},
+		{"allow-skip", true, true, true},
+		{"fail-skip-off", false, false, true},
+		{"both", false, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			opts := &verifyOptions{FailSkip: tc.failSkip}
-			opts.SetExitCode = tc.exitCode
-			require.Equal(t, tc.expect, opts.exitNonZero(tc.status))
+			opts.AllowSkip = tc.allow
+			// The other options are unset, so validation fails; the mapping
+			// happens before it does.
+			require.Error(t, opts.Validate())
+			require.Equal(t, tc.expect, opts.AllowSkip)
 		})
 	}
 }
