@@ -34,7 +34,7 @@ func TestExitNonZero(t *testing.T) {
 	}
 }
 
-// The hidden --fail-skip keeps working: off, it allows skips.
+// The deprecated --fail-skip keeps working: off, it allows skips.
 func TestFailSkipMapsToAllowSkip(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
