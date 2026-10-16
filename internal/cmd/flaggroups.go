@@ -5,6 +5,7 @@ package cmd
 
 import (
 	"strings"
+	"sync"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -22,15 +23,29 @@ type flagGroup struct {
 
 // commandGroups holds the per-command ordered group list consulted by
 // the custom usage template. Keyed by *cobra.Command, populated by
-// registerFlagGroups and read by groupedFlagUsages. A global map fits
-// here because cobra commands are constructed once at startup.
-var commandGroups = map[*cobra.Command][]flagGroup{}
+// registerFlagGroups and read by groupedFlagUsages. The binary builds its
+// commands once at startup, but tests build them concurrently, so the map
+// is behind a lock.
+var (
+	commandGroups   = map[*cobra.Command][]flagGroup{}
+	commandGroupsMu sync.RWMutex
+)
 
 // registerFlagGroups records the ordered group list for cmd. Flags
 // without a recognized group fall through to the trailing "Other Flags:"
 // section.
 func registerFlagGroups(cmd *cobra.Command, groups ...flagGroup) {
+	commandGroupsMu.Lock()
+	defer commandGroupsMu.Unlock()
 	commandGroups[cmd] = groups
+}
+
+// flagGroupsOf returns the ordered group list recorded for cmd.
+func flagGroupsOf(cmd *cobra.Command) ([]flagGroup, bool) {
+	commandGroupsMu.RLock()
+	defer commandGroupsMu.RUnlock()
+	groups, ok := commandGroups[cmd]
+	return groups, ok
 }
 
 // groupFlags tags each named persistent flag on cmd with group. Unknown
@@ -71,7 +86,7 @@ func groupFlagsByPrefix(cmd *cobra.Command, group string, prefixes ...string) {
 // headings registered for cmd. Mirrors pflag.FlagSet.FlagUsages output
 // per bucket so column alignment matches cobra's default rendering.
 func groupedFlagUsages(cmd *cobra.Command) string {
-	groups, ok := commandGroups[cmd]
+	groups, ok := flagGroupsOf(cmd)
 	if !ok || len(groups) == 0 {
 		return cmd.LocalFlags().FlagUsages()
 	}
