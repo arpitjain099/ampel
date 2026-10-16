@@ -3,6 +3,8 @@
 
 package options
 
+import "time"
+
 // EvaluatorOptions are assembled by the verifier and passed deep to
 // the evaluator when executing the policy tenets.
 type EvaluatorOptions struct {
@@ -16,6 +18,12 @@ type EvaluatorOptions struct {
 	// them rather than reporting a hard failure. The default (false) preserves
 	// the failing behavior.
 	SkipUnsupportedRuntime bool
+
+	// RunStarted is when the verification run started. The verifier stamps
+	// it once per run, so ampel.started() answers the same instant to every
+	// policy of the run; left zero, the engine answers when the evaluator
+	// was built.
+	RunStarted time.Time
 }
 
 var Default = EvaluatorOptions{

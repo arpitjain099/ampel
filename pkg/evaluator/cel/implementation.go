@@ -27,6 +27,7 @@ import (
 
 	"github.com/policylabs/ampel/pkg/evaluator/evalcontext"
 	"github.com/policylabs/ampel/pkg/evaluator/options"
+	"github.com/policylabs/ampel/pkg/evaluator/plugins/engine"
 )
 
 // Shared map-key / CEL identifier literals used across the package.
@@ -135,7 +136,24 @@ func (dce *defaulCelEvaluator) BuildVariables(
 	for _, p := range plugins {
 		maps.Copy(ret, p.VarValues(evalContext.Policy, evalContext.Subject, fpreds))
 	}
+	stampRunStart(ret, opts)
 	return &ret, nil
+}
+
+// stampRunStart gives the ampel object the run's start, when the options
+// carry one, so every policy of a run reads the same instant. The plugin's
+// own value is copied, never changed: it is shared by every evaluation.
+func stampRunStart(vars map[string]any, opts *options.EvaluatorOptions) {
+	if opts == nil || opts.RunStarted.IsZero() {
+		return
+	}
+	e, ok := vars[engine.VarName].(*engine.Engine)
+	if !ok {
+		return
+	}
+	stamped := *e
+	stamped.Started = opts.RunStarted
+	vars[engine.VarName] = &stamped
 }
 
 // predicateVariables builds the `predicates` variable from the predicates,
@@ -585,6 +603,7 @@ func (dce *defaulCelEvaluator) BuildSelectorVariables(
 	for _, p := range plugins {
 		maps.Copy(ret, p.VarValues(policy, subject, []attestation.Predicate{predicate}))
 	}
+	stampRunStart(ret, opts)
 
 	return &ret, nil
 }
@@ -631,6 +650,7 @@ func (dce *defaulCelEvaluator) BuildExpressionVariables(
 	for _, p := range plugins {
 		maps.Copy(ret, p.VarValues(evalContext.Policy, evalContext.Subject, fpreds))
 	}
+	stampRunStart(ret, opts)
 
 	return &ret, nil
 }

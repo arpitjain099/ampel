@@ -49,6 +49,8 @@ func Formats() []string {
 }
 
 func GetDriverBytType(t string) Driver {
+	drMtx.Lock()
+	defer drMtx.Unlock()
 	if d, ok := drivers[t]; ok {
 		return d
 	}

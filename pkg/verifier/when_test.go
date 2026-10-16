@@ -6,6 +6,7 @@ package verifier
 import (
 	"context"
 	"testing"
+	"time"
 
 	gointoto "github.com/in-toto/attestation/go/v1"
 	papi "github.com/policylabs/policy/api/v1"
@@ -74,6 +75,9 @@ func TestWhenPolicy(t *testing.T) {
 			p.Context = envContext("dev")
 			return p
 		}(), papi.StatusSKIP, ""},
+		// The engine is always newer than v0.0.1, a release or a development build.
+		{"reads-the-engine", gatedPolicy("engine-yes", "ampel.atLeast('v0.0.1')"), papi.StatusPASS, ""},
+		{"engine-condition-false-skips", gatedPolicy("engine-no", "ampel.olderThan('v0.0.1')"), papi.StatusSKIP, ""},
 		{"non-boolean-errors", gatedPolicy("str", "'yes'"), "", "must yield a boolean"},
 		{"undeclared-context-errors", gatedPolicy("undecl", "context.nope == 'x'"), "", "condition"},
 		{"unknown-runtime-errors", &papi.Policy{
@@ -377,5 +381,58 @@ func TestWhenBlocks(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, papi.StatusFAIL, res.GetEvalResults()[0].GetStatus())
 		require.Equal(t, papi.StatusFAIL, res.GetStatus())
+	})
+}
+
+// Verify stamps the run's start once, so every policy of a run reads the
+// same ampel.started(), and the nested entry points honor a start the
+// caller sets.
+func TestEngineRunStart(t *testing.T) {
+	t.Parallel()
+	startedPolicy := func(id string) *papi.Policy {
+		return &papi.Policy{
+			Id:   id,
+			Meta: &papi.Meta{},
+			// Outputs are evaluated lazily, so the code reads the one it records.
+			Tenets: []*papi.Tenet{{
+				Id:      "t1",
+				Outputs: map[string]*papi.Output{"started": {Code: "string(ampel.started())"}},
+				Code:    "outputs.started != '' && ampel.started() >= timestamp(context.t0)",
+			}},
+			Context: map[string]*papi.ContextVal{"t0": {Type: papi.ContextTypeString, Value: structpb.NewStringValue(time.Now().Add(-time.Second).UTC().Format(time.RFC3339Nano))}},
+		}
+	}
+	startedOutput := func(t *testing.T, r *papi.Result) string {
+		t.Helper()
+		require.Equal(t, papi.StatusPASS, r.GetStatus())
+		out := r.GetEvalResults()[0].GetOutput().AsMap()["started"]
+		s, ok := out.(string)
+		require.True(t, ok, "output = %v", out)
+		return s
+	}
+
+	t.Run("one-start-per-run", func(t *testing.T) {
+		t.Parallel()
+		ampel, err := New()
+		require.NoError(t, err)
+		set := &papi.PolicySet{Id: "set", Policies: []*papi.Policy{startedPolicy("a"), startedPolicy("b")}}
+		res, err := ampel.Verify(context.Background(), whenTestOptions(), set, whenTestSubject())
+		require.NoError(t, err)
+		rs, ok := res.(*papi.ResultSet)
+		require.True(t, ok)
+		require.Len(t, rs.GetResults(), 2)
+		require.Equal(t, startedOutput(t, rs.GetResults()[0]), startedOutput(t, rs.GetResults()[1]), "both policies read the run's start")
+	})
+
+	t.Run("a-start-the-caller-sets", func(t *testing.T) {
+		t.Parallel()
+		ampel, err := New()
+		require.NoError(t, err)
+		opts := whenTestOptions()
+		opts.RunStarted = time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+		p := gatedPolicy("stamped", "ampel.started() == timestamp('2026-10-16T12:00:00Z')")
+		res, err := ampel.VerifySubjectWithPolicy(context.Background(), opts, p, whenTestSubject())
+		require.NoError(t, err)
+		require.Equal(t, papi.StatusPASS, res.GetStatus(), "the condition read the start the caller set")
 	})
 }

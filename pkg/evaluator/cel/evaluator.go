@@ -6,6 +6,7 @@ package cel
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"cel.dev/cel-go/cel"
 	intoto "github.com/in-toto/attestation/go/v1"
@@ -21,6 +22,7 @@ import (
 	"github.com/policylabs/ampel/pkg/evaluator/evalcontext"
 	"github.com/policylabs/ampel/pkg/evaluator/options"
 	"github.com/policylabs/ampel/pkg/evaluator/plugins/cvss"
+	"github.com/policylabs/ampel/pkg/evaluator/plugins/engine"
 	"github.com/policylabs/ampel/pkg/evaluator/plugins/github"
 	"github.com/policylabs/ampel/pkg/evaluator/plugins/hasher"
 	"github.com/policylabs/ampel/pkg/evaluator/plugins/osv"
@@ -83,6 +85,7 @@ var (
 	_ Plugin = (*purl.Plugin)(nil)
 	_ Plugin = (*semver.Plugin)(nil)
 	_ Plugin = (*cvss.Plugin)(nil)
+	_ Plugin = (*engine.Plugin)(nil)
 )
 
 // rebuildEnvironment builds the environment with the current settings
@@ -113,6 +116,19 @@ func (e *Evaluator) rebuildEnvironment(opts *options.EvaluatorOptions) error {
 			return fmt.Errorf("registering osv: %w", err)
 		}
 	}
+
+	// The engine's own data is always there, whatever plugins were loaded:
+	// it is registered last so the ampel object can list them all.
+	eng := engine.FromBuild()
+	eng.Runtime = Class.String()
+	if err := e.RegisterPlugin(engine.NewWithEngine(eng)); err != nil {
+		return fmt.Errorf("registering engine: %w", err)
+	}
+	eng.Plugins = make([]string, 0, len(e.Plugins))
+	for _, p := range e.Plugins {
+		eng.Plugins = append(eng.Plugins, p.Identity().String())
+	}
+	slices.Sort(eng.Plugins)
 
 	for _, p := range e.Plugins {
 		logrus.Debugf("registered CEL plugin %T version %s", p, p.Identity().Version())
