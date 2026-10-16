@@ -163,7 +163,7 @@ func (d *Driver) RenderResultSet(w io.Writer, rset *papi.ResultSet) error {
 		return err
 	}
 
-	var failed, soft int
+	var failed, soft, skipped int
 	var failedID, failedMsg, softID, softMsg string
 	for _, r := range results {
 		switch r.GetStatus() {
@@ -173,6 +173,8 @@ func (d *Driver) RenderResultSet(w io.Writer, rset *papi.ResultSet) error {
 				failedID, failedMsg = policyID(r), decidingMessage(r)
 			}
 			failed++
+		case papi.StatusSKIP:
+			skipped++
 		default:
 			if soft == 0 {
 				softID, softMsg = policyID(r), decidingMessage(r)
@@ -188,6 +190,8 @@ func (d *Driver) RenderResultSet(w io.Writer, rset *papi.ResultSet) error {
 				failedID, failedMsg = groupID(g), groupMessage(g)
 			}
 			failed++
+		case papi.StatusSKIP:
+			skipped++
 		default:
 			if soft == 0 {
 				softID, softMsg = groupID(g), groupMessage(g)
@@ -203,13 +207,30 @@ func (d *Driver) RenderResultSet(w io.Writer, rset *papi.ResultSet) error {
 			w, "%s %s%s: %s (%d of %d policies failed)\n",
 			overall, prefix, failedID, failedMsg, failed, total,
 		)
+	case rset.GetError().GetMessage() != "":
+		// The set failed as a whole, with no member failing: nothing was
+		// verified and skipping was not allowed.
+		_, err = fmt.Fprintf(
+			w, "%s %s%s (%d of %d policies skipped)\n",
+			overall, prefix, rset.GetError().GetMessage(), skipped, total,
+		)
 	case soft > 0:
 		_, err = fmt.Fprintf(
 			w, "%s %s%s: %s (%d of %d policies softfailed)\n",
 			overall, prefix, softID, softMsg, soft, total,
 		)
+	case skipped == total:
+		_, err = fmt.Fprintf(w, "%s %sall %d policies skipped\n", overall, prefix, total)
+	case skipped > 0:
+		_, err = fmt.Fprintf(w, "%s %s%d of %d policies passed, %d skipped\n", overall, prefix, total-skipped, total, skipped)
 	default:
 		_, err = fmt.Fprintf(w, "%s %sall %d policies passed\n", overall, prefix, total)
 	}
 	return err
+}
+
+// SupportsStatus reports that any status can be rendered: the output names
+// the status and explains it, whatever it is.
+func (d *Driver) SupportsStatus(status string) bool {
+	return status != ""
 }

@@ -275,7 +275,13 @@ func TestWhenPolicySet(t *testing.T) {
 		res, err := ampel.Verify(context.Background(), whenTestOptions(), []*papi.PolicySet{skipped, passing}, whenTestSubject())
 		require.NoError(t, err)
 		require.Equal(t, papi.StatusPASS, res.GetStatus())
+		// Nothing verified at the root is a failure unless skips are allowed.
 		res, err = ampel.Verify(context.Background(), whenTestOptions(), []*papi.PolicySet{skipped, skipped}, whenTestSubject())
+		require.NoError(t, err)
+		require.Equal(t, papi.StatusFAIL, res.GetStatus())
+		allowing := whenTestOptions()
+		allowing.AllowSkip = true
+		res, err = ampel.Verify(context.Background(), allowing, []*papi.PolicySet{skipped, skipped}, whenTestSubject())
 		require.NoError(t, err)
 		require.Equal(t, papi.StatusSKIP, res.GetStatus())
 	})

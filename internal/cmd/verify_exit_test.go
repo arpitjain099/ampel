@@ -23,8 +23,10 @@ func TestExitNonZero(t *testing.T) {
 		{"softfail", papi.StatusSOFTFAIL, true, true, false},
 		{"fail-with-exit-code", papi.StatusFAIL, true, false, true},
 		{"fail-without-exit-code", papi.StatusFAIL, false, true, false},
-		{"skip-by-default", papi.StatusSKIP, true, false, false},
-		{"skip-with-fail-skip", papi.StatusSKIP, true, true, true},
+		// A SKIP is only answered when --allow-skip asked for it; it exits
+		// zero unless --fail-skip wants scripts to block on it too.
+		{"allowed-skip", papi.StatusSKIP, true, false, false},
+		{"allowed-skip-with-fail-skip", papi.StatusSKIP, true, true, true},
 		{"exit-code-off-disables-fail-skip", papi.StatusSKIP, false, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -34,4 +36,14 @@ func TestExitNonZero(t *testing.T) {
 			require.Equal(t, tc.expect, opts.exitNonZero(tc.status))
 		})
 	}
+}
+
+// Without --allow-skip a run never answers SKIP, so --fail-skip changes
+// nothing: it does not turn skips on, and the root still fails on its own.
+func TestFailSkipNeedsAllowSkip(t *testing.T) {
+	t.Parallel()
+	opts := &verifyOptions{FailSkip: true}
+	require.Error(t, opts.Validate()) // the other options are unset
+	require.False(t, opts.AllowSkip)
+	require.Equal(t, []string{papi.StatusPASS, papi.StatusFAIL, papi.StatusSOFTFAIL}, opts.possibleStatuses())
 }

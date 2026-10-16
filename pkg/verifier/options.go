@@ -56,6 +56,15 @@ type VerificationOptions struct {
 	// SetExitCode sets a non-zero exit code on artifact verification
 	SetExitCode bool
 
+	// AllowSkip lets the material the verifier was asked to evaluate (the
+	// root material: the policy, set or group handed to Verify) answer SKIP
+	// when nothing applied to the subject: a policy whose condition is
+	// false, or a set or group whose members all skipped. Off, the default,
+	// such an evaluation fails with ErrAllSkipped: the verifier was asked
+	// to verify and nothing was verified. Nested material keeps answering
+	// SKIP either way; only the root is translated.
+	AllowSkip bool
+
 	// Policies to evaluate from a PolicySet. Default is to evaluate all.
 	Policies []string
 

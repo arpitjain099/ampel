@@ -82,8 +82,10 @@ var verifyFlagGroups = []flagGroup{
 }
 
 type verifyOptions struct {
-	// FailSkip makes the command exit non-zero when the evaluation result
-	// is SKIP, that is, when no policy applied to the subject.
+	// FailSkip makes the command exit non-zero on a SKIP result. It only
+	// matters with AllowSkip, which is what lets a run answer SKIP: the
+	// record keeps the skip, the exit code treats it as a failure, so a
+	// script can block on "nothing applied" without losing the record.
 	FailSkip bool
 
 	verifier.VerificationOptions
@@ -175,7 +177,11 @@ func (o *verifyOptions) AddFlags(cmd *cobra.Command) {
 	)
 
 	cmd.PersistentFlags().BoolVar(
-		&o.FailSkip, "fail-skip", false, "also set a non-zero exit code when the result is SKIP (no policy applied to the subject)",
+		&o.AllowSkip, "allow-skip", false, "return raw SKIP instead of FAIL when nothing was verified",
+	)
+
+	cmd.PersistentFlags().BoolVar(
+		&o.FailSkip, "fail-skip", false, "with --allow-skip, exit non-zero on a SKIP result while still recording it as such",
 	)
 
 	cmd.PersistentFlags().StringSliceVar(
@@ -228,7 +234,7 @@ func (o *verifyOptions) AddFlags(cmd *cobra.Command) {
 	groupFlags(cmd, grpEvidence, "key", "attestation", "collector", "signer")
 	groupFlags(cmd, grpContext, "context", "context-json", "context-yaml", "context-env")
 	groupFlags(cmd, grpResults, "attest-results", "attest-format", "results-path", "format", "publish")
-	groupFlags(cmd, grpVerification, "exit-code", "fail-skip", "workers", "allow-empty-set-chain", "skip-unsupported-runtime")
+	groupFlags(cmd, grpVerification, "exit-code", "allow-skip", "fail-skip", "workers", "allow-empty-set-chain", "skip-unsupported-runtime")
 	groupFlags(cmd, grpSigning, "sign")
 	// Sweep every flag the SignerSet just registered into the
 	// Signing section. Doing it post-hoc keeps the signer library's
@@ -303,6 +309,11 @@ func (o *verifyOptions) Validate() error {
 		errs = append(errs, errors.New("no attestation sources specified (collectors or files)"))
 	}
 
+	// Every status the run may answer must be one its outputs can render
+	// and attest; the drivers say which they can. Asking now keeps a run
+	// from ending in results that cannot be written.
+	errs = append(errs, o.checkOutputsRenderStatuses()...)
+
 	if o.Sign {
 		_, stdoutIsAttest := attestFormatFor(o.Format)
 		if !o.AttestResults && !stdoutIsAttest {
@@ -314,6 +325,40 @@ func (o *verifyOptions) Validate() error {
 	}
 
 	return errors.Join(errs...)
+}
+
+// possibleStatuses lists the statuses a run may answer at the root: a
+// verdict always, and SKIP when the options allow it.
+func (o *verifyOptions) possibleStatuses() []string {
+	statuses := []string{papi.StatusPASS, papi.StatusFAIL, papi.StatusSOFTFAIL}
+	if o.AllowSkip {
+		statuses = append(statuses, papi.StatusSKIP)
+	}
+	return statuses
+}
+
+// checkOutputsRenderStatuses asks the output driver and, when results are
+// attested, the attestation format whether they can render every status the
+// run may answer, and returns an error for each one they cannot.
+func (o *verifyOptions) checkOutputsRenderStatuses() []error {
+	errs := []error{}
+	driver := render.GetDriverBytType(o.Format)
+	attester := attest.New()
+	for _, status := range o.possibleStatuses() {
+		if driver != nil && !driver.SupportsStatus(status) {
+			errs = append(errs, fmt.Errorf(
+				"--format=%s cannot render a %s result, which this run may produce (pick a format that can, or drop --allow-skip)",
+				o.Format, status,
+			))
+		}
+		if o.AttestResults && !attester.SupportsStatus(o.AttestFormat, status) {
+			errs = append(errs, fmt.Errorf(
+				"--attest-format=%s cannot record a %s result, which this run may produce (pick a format that can, or drop --allow-skip)",
+				o.AttestFormat, status,
+			))
+		}
+	}
+	return errs
 }
 
 func addVerify(parentCmd *cobra.Command) {
@@ -665,8 +710,9 @@ func parsePolicyKeys(opt *verifyOptions) ([]key.PublicKeyProvider, error) {
 
 // exitNonZero reports if the command must exit with a non-zero code for the
 // given evaluation status. --exit-code=false disables result-based exit
-// codes altogether; with it on, FAIL always exits non-zero and SKIP does
-// too when --fail-skip treats "no policy applied" as a failure.
+// codes altogether; with it on, FAIL exits non-zero. A SKIP only reaches
+// here when --allow-skip asked for it; it exits zero like a PASS unless
+// --fail-skip asks for a script to block on it too.
 func (opts *verifyOptions) exitNonZero(status string) bool {
 	if !opts.SetExitCode {
 		return false

@@ -114,8 +114,12 @@ func (d *Decorator) ControlsToString(result *papi.Result, checkID, def string) s
 
 func (d *Decorator) TenetsToString(result *papi.Result) string {
 	// A skipped policy ran no tenet: its evaluation results record the
-	// condition and what was set aside, not tenets.
-	if result.GetStatus() == papi.StatusSKIP {
+	// condition, what was set aside and, when skipping was not allowed, the
+	// failure, none of them tenets.
+	if ers := result.GetEvalResults(); len(ers) > 0 && ers[0].GetId() == "when" && ers[0].GetStatus() == papi.StatusSKIP {
+		if result.GetStatus() == papi.StatusFAIL {
+			return "none evaluated, policy skipped (not allowed)"
+		}
 		return "none evaluated, policy skipped"
 	}
 	ret := fmt.Sprintf("%d ", len(result.EvalResults))

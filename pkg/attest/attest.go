@@ -10,10 +10,12 @@
 package attest
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -45,7 +47,8 @@ const formatAmpel = "ampel"
 // pre-built *signer.Signer) and never overrides; library callers
 // can stay stateless and pass options per call instead.
 type ResultsAttester struct {
-	defaults attestOptions
+	defaults Options
+	formats  map[string]Format
 }
 
 // New returns a ResultsAttester with optional instance-level
@@ -53,7 +56,7 @@ type ResultsAttester struct {
 // every call (typical CLI use); otherwise leave empty and pass
 // options per call.
 func New(opts ...FnOpt) *ResultsAttester {
-	a := &ResultsAttester{defaults: defaultAttestOptions()}
+	a := &ResultsAttester{defaults: defaultAttestOptions(), formats: defaultFormats()}
 	for _, fn := range opts {
 		fn(&a.defaults)
 	}
@@ -63,19 +66,100 @@ func New(opts ...FnOpt) *ResultsAttester {
 // FnOpt configures a ResultsAttester. Passed to New, it sets
 // instance-wide defaults; passed to AttestTo / AttestToFile, it
 // overrides those defaults for that one call.
-type FnOpt func(*attestOptions)
+type FnOpt func(*Options)
 
-// attestOptions is the resolved configuration for one Attest* call.
-type attestOptions struct {
-	format      string
-	prettyPrint bool
-	signer      *signer.Signer
+// Options is the resolved configuration for one Attest* call. A Format
+// receives it and honors PrettyPrint and Signer, through WriteStatement.
+type Options struct {
+	// Format is the name of the format to write.
+	Format string
+	// PrettyPrint indents the JSON of an unsigned statement.
+	PrettyPrint bool
+	// Signer signs the statement when set.
+	Signer *signer.Signer
+}
+
+// Format writes results attestations in one format. Beyond writing, a
+// format says which evaluation statuses it can record: a VSA or SVR, for
+// example, has no way to say SKIP. A caller that may answer a status asks
+// before evaluating, so a run never ends in an attestation that cannot be
+// written. Custom formats are added with RegisterFormat.
+type Format interface {
+	// Attest writes the attestation for results to w, honoring opts.
+	Attest(w io.Writer, results papi.Results, opts *Options) error
+	// SupportsStatus reports whether a result with the status can be
+	// recorded in the format.
+	SupportsStatus(status string) bool
+}
+
+// ampelFormat is the native results attestation: it records every status.
+type ampelFormat struct{}
+
+func (ampelFormat) Attest(w io.Writer, results papi.Results, opts *Options) error {
+	return attestAmpel(w, results, *opts)
+}
+
+func (ampelFormat) SupportsStatus(status string) bool { return status != "" }
+
+// verdictFormat is shared by the formats that only know a verdict, PASSED
+// or FAILED: a VSA and an SVR. They record a soft failure as passed and
+// cannot record a skip.
+type verdictFormat struct {
+	attest func(w io.Writer, results papi.Results, opts Options) error
+}
+
+func (f verdictFormat) Attest(w io.Writer, results papi.Results, opts *Options) error {
+	return f.attest(w, results, *opts)
+}
+
+func (verdictFormat) SupportsStatus(status string) bool {
+	switch status {
+	case papi.StatusPASS, papi.StatusFAIL, papi.StatusSOFTFAIL:
+		return true
+	default:
+		return false
+	}
+}
+
+// defaultFormats are the formats every attester starts with.
+func defaultFormats() map[string]Format {
+	return map[string]Format{
+		formatAmpel: ampelFormat{},
+		"vsa":       verdictFormat{attest: attestVSA},
+		"svr":       verdictFormat{attest: attestSVR},
+	}
+}
+
+// RegisterFormat adds a format under name, replacing one of that name.
+func (a *ResultsAttester) RegisterFormat(name string, f Format) {
+	a.formats[name] = f
+}
+
+// Formats lists the names of the formats the attester can write.
+func (a *ResultsAttester) Formats() []string {
+	return slices.Sorted(maps.Keys(a.formats))
+}
+
+// SupportsStatus reports whether the named format can record a result
+// with the status. An unknown format supports nothing. An empty format
+// name is the ampel format, as in WithFormat.
+func (a *ResultsAttester) SupportsStatus(format, status string) bool {
+	f, ok := a.formats[formatName(format)]
+	return ok && f.SupportsStatus(status)
+}
+
+// formatName resolves the empty format name to the ampel format.
+func formatName(format string) string {
+	if format == "" {
+		return formatAmpel
+	}
+	return format
 }
 
 // defaultAttestOptions returns the baseline config used when no
 // FnOpts are supplied at construction or call time.
-func defaultAttestOptions() attestOptions {
-	return attestOptions{format: formatAmpel, prettyPrint: true}
+func defaultAttestOptions() Options {
+	return Options{Format: formatAmpel, PrettyPrint: true}
 }
 
 // WithFormat selects the results-attestation format for the call.
@@ -83,8 +167,8 @@ func defaultAttestOptions() attestOptions {
 // to "ampel" at dispatch, so passing through an unset
 // AttestFormat option is safe.
 func WithFormat(format string) FnOpt {
-	return func(o *attestOptions) {
-		o.format = format
+	return func(o *Options) {
+		o.Format = format
 	}
 }
 
@@ -97,8 +181,8 @@ func WithFormat(format string) FnOpt {
 // formatting dictated by its kind (sigstore Bundle: compact;
 // DSSE envelope: indented).
 func WithPrettyPrint(enabled bool) FnOpt {
-	return func(o *attestOptions) {
-		o.prettyPrint = enabled
+	return func(o *Options) {
+		o.PrettyPrint = enabled
 	}
 }
 
@@ -111,22 +195,24 @@ func WithPrettyPrint(enabled bool) FnOpt {
 // nil resets to the unsigned path — useful per-call to override an
 // instance-level default set at New time.
 func WithSigner(s *signer.Signer) FnOpt {
-	return func(o *attestOptions) {
-		o.signer = s
+	return func(o *Options) {
+		o.Signer = s
 	}
 }
 
 // AttestToFile writes the results attestation for results to path,
-// truncating any existing file. The file handle is closed before
-// the call returns. Per-call FnOpts override any defaults set at
-// New time.
+// truncating any existing file. The attestation is rendered in full
+// before the file is touched, so a refused or failed attestation leaves
+// no file behind. Per-call FnOpts override any defaults set at New time.
 func (a *ResultsAttester) AttestToFile(path string, results papi.Results, opts ...FnOpt) error {
-	f, err := os.Create(path)
-	if err != nil {
-		return fmt.Errorf("opening results attestation path: %w", err)
+	var buf bytes.Buffer
+	if err := a.AttestTo(&buf, results, opts...); err != nil {
+		return err
 	}
-	defer f.Close() //nolint:errcheck // best-effort close on a write target; AttestTo's error wins
-	return a.AttestTo(f, results, opts...)
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil { //nolint:gosec // an attestation is meant to be read
+		return fmt.Errorf("writing results attestation: %w", err)
+	}
+	return nil
 }
 
 // AttestTo writes the results attestation for results to w. The
@@ -138,32 +224,27 @@ func (a *ResultsAttester) AttestTo(w io.Writer, results papi.Results, opts ...Fn
 	for _, fn := range opts {
 		fn(&o)
 	}
-	switch o.format {
-	case formatAmpel, "":
-		return a.attestAmpel(w, results, o)
-	case "vsa":
-		return a.attestVSA(w, results, o)
-	case "svr":
-		return a.attestSVR(w, results, o)
-	default:
-		return fmt.Errorf("unknown attestation format %q", o.format)
+	f, ok := a.formats[formatName(o.Format)]
+	if !ok {
+		return fmt.Errorf("unknown attestation format %q", o.Format)
 	}
+	return f.Attest(w, results, &o)
 }
 
-// writeStatement writes stmt to w in either its raw in-toto JSON
+// WriteStatement writes stmt to w in either its raw in-toto JSON
 // form (when no signer is configured) or as a signer.SignedArtifact
 // (sigstore Bundle or DSSE envelope, depending on the backend).
-// All format-specific writers funnel through this method so the
-// signing dispatch lives in exactly one place.
-func (a *ResultsAttester) writeStatement(w io.Writer, stmt *intoto.Statement, o attestOptions) error {
-	if o.signer == nil {
-		return writeStatementJSON(w, stmt, o.prettyPrint)
+// All format-specific writers, custom formats included, funnel through
+// it so the signing dispatch lives in exactly one place.
+func WriteStatement(w io.Writer, stmt *intoto.Statement, o Options) error {
+	if o.Signer == nil {
+		return writeStatementJSON(w, stmt, o.PrettyPrint)
 	}
 	data, err := json.Marshal(stmt)
 	if err != nil {
 		return fmt.Errorf("serializing statement for signing: %w", err)
 	}
-	artifact, err := o.signer.SignStatement(data)
+	artifact, err := o.Signer.SignStatement(data)
 	if err != nil {
 		return fmt.Errorf("signing statement: %w", err)
 	}
@@ -176,7 +257,7 @@ func (a *ResultsAttester) writeStatement(w io.Writer, stmt *intoto.Statement, o 
 // attestAmpel writes an "ampel"-format results attestation. Result
 // and ResultGroup inputs are wrapped into a single-entry ResultSet
 // before serialization so every output is the same shape.
-func (a *ResultsAttester) attestAmpel(w io.Writer, results papi.Results, o attestOptions) error {
+func attestAmpel(w io.Writer, results papi.Results, o Options) error {
 	switch r := results.(type) {
 	case *papi.Result:
 		rs := &papi.ResultSet{
@@ -188,9 +269,9 @@ func (a *ResultsAttester) attestAmpel(w io.Writer, results papi.Results, o attes
 		if err := rs.Assert(); err != nil {
 			return fmt.Errorf("asserting results set: %w", err)
 		}
-		return a.writeResultSet(w, rs, o)
+		return writeResultSet(w, rs, o)
 	case *papi.ResultSet:
-		return a.writeResultSet(w, r, o)
+		return writeResultSet(w, r, o)
 	case *papi.ResultGroup:
 		rs := &papi.ResultSet{
 			Subject:   r.Subject,
@@ -201,7 +282,7 @@ func (a *ResultsAttester) attestAmpel(w io.Writer, results papi.Results, o attes
 		if err := rs.Assert(); err != nil {
 			return fmt.Errorf("asserting results set: %w", err)
 		}
-		return a.writeResultSet(w, rs, o)
+		return writeResultSet(w, rs, o)
 	default:
 		return errors.New("results are not Result, ResultSet or ResultGroup")
 	}
@@ -231,12 +312,12 @@ func writeStatementJSON(w io.Writer, stmt *intoto.Statement, pretty bool) error 
 }
 
 // writeResultSet builds an in-toto statement carrying a
-// predicates.ResultSet and writes it via a.writeStatement. The statement
+// predicates.ResultSet and writes it via WriteStatement. The statement
 // is about the subject the set was evaluated against, not about the
 // subjects recorded in its results: chained evaluations look at other
 // artifacts along the way, but the verdict is still about the original
 // subject.
-func (a *ResultsAttester) writeResultSet(w io.Writer, resultset *papi.ResultSet, o attestOptions) error {
+func writeResultSet(w io.Writer, resultset *papi.ResultSet, o Options) error {
 	if resultset == nil {
 		return errors.New("unable to attest results, set is nil")
 	}
@@ -249,7 +330,7 @@ func (a *ResultsAttester) writeResultSet(w io.Writer, resultset *papi.ResultSet,
 	stmt.PredicateType = predicates.PredicateTypeResultSet
 	stmt.Predicate = &predicates.ResultSet{Parsed: resultset}
 
-	return a.writeStatement(w, stmt, o)
+	return WriteStatement(w, stmt, o)
 }
 
 // stringifyDigests returns a canonical algo:value/algo:value... form

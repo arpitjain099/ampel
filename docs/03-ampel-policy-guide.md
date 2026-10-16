@@ -546,15 +546,38 @@ its error message. The `tty` output marks them with a hollow dot.
 
 Skips are recorded, never summarized as a verification. Within a PolicySet,
 skipped policies are left out of the `VerifiedLevels` of a VSA, and a set
-whose policies and groups all skipped is itself `SKIP`. A skipped policy or
-set cannot be attested as a VSA or SVR at all: `ampel verify --format vsa`
-(or `svr`) fails with "skipped results cannot be attested", because no
-evaluation took place and there is no PASSED or FAILED to report. The ampel
-result attestation still carries the `SKIP` status.
+whose policies and groups all skipped is itself `SKIP`, as is a group whose
+blocks all skipped.
 
-`ampel verify` exits 0 on `SKIP`, like it does on `PASS`: no applicable policy
-failed. Pass `--fail-skip` to exit non-zero instead when nothing applied, for
-pipelines that must not let a subject through unverified.
+### Nothing verified at the root
+
+The material the verifier is asked to evaluate, the policy, set or group
+given to `ampel verify --policy`, is the **root** of the evaluation;
+everything inside a set or a block is nested. A nested policy, block, set or
+group may answer `SKIP`, and its container decides what that means. The root
+may not: being asked to verify a subject and verifying nothing is a
+**failure**. A root policy whose condition is false, a root set whose
+policies and groups all skipped, and a root group whose blocks all skipped
+fail with the error "everything was skipped, nothing was verified", whose
+guidance names the case. The nested results keep their `SKIP`, so the record
+still shows what did not apply and why. A failed root is attested like any
+other failure: as `FAILED` in a VSA or SVR, with the error in the ampel
+result attestation.
+
+`ampel verify --allow-skip` restores the skipped answer: the root reports
+`SKIP` and the command exits 0, like on a `PASS`, for pipelines that treat
+"nothing applied" as acceptable. Adding `--fail-skip` keeps the record as a
+skip but exits non-zero on it, for a script that must block on "nothing
+applied" without attesting it as a failure; without `--allow-skip` the flag
+has no effect, since the run never answers `SKIP`. The ampel results
+attestation records the skip; a VSA or SVR cannot, since neither has anything but PASSED and FAILED
+to say. Every output format reports which statuses it can render, and
+`ampel verify` asks before evaluating: `--allow-skip` refuses to run with
+`--format vsa` or `svr`, or with `--attest-results --attest-format vsa` or
+`svr`. To attest in those formats, verify without `--allow-skip` and a root
+that verified nothing is attested as a failure. Embedders of the verifier have the same choice
+through the `AllowSkip` verification option, and can recognize the failure
+with `verifier.AllSkipped`.
 
 ## Signer Identities
 

@@ -32,3 +32,9 @@ func (d *Driver) RenderResult(w io.Writer, status *papi.Result) error {
 func (d *Driver) RenderResultGroup(w io.Writer, status *papi.ResultGroup) error {
 	return d.Attester.AttestTo(w, status)
 }
+
+// SupportsStatus reports whether the attestation format can record the
+// status.
+func (d *Driver) SupportsStatus(status string) bool {
+	return d.Attester.SupportsStatus("", status)
+}
