@@ -81,6 +81,17 @@ func (d *Decorator) ErrorToString(err *papi.Error) string {
 }
 
 func (d *Decorator) ControlsToString(result *papi.Result, checkID, def string) string {
+	// Without controls to map the check onto, the check is named by its own
+	// id, or by its position when it has none.
+	if len(result.GetMeta().GetControls()) == 0 {
+		if checkID != "" {
+			return checkID
+		}
+		if def != "" {
+			return "#" + def
+		}
+		return ""
+	}
 	ret := ""
 	for _, c := range result.Meta.Controls {
 		if ret != "" {
@@ -102,6 +113,11 @@ func (d *Decorator) ControlsToString(result *papi.Result, checkID, def string) s
 }
 
 func (d *Decorator) TenetsToString(result *papi.Result) string {
+	// A skipped policy ran no tenet: its evaluation results record the
+	// condition and what was set aside, not tenets.
+	if result.GetStatus() == papi.StatusSKIP {
+		return "none evaluated, policy skipped"
+	}
 	ret := fmt.Sprintf("%d ", len(result.EvalResults))
 	var pass, fail, softfail, skip int
 	for _, r := range result.EvalResults {

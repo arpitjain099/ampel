@@ -155,4 +155,42 @@ func TestResultTableSkip(t *testing.T) {
 	out := buf.String()
 	require.Contains(t, out, "SKIP")
 	require.Contains(t, out, "Skipped: condition")
+	require.Contains(t, out, "none evaluated, policy skipped", "a skip ran no tenet")
+	require.Contains(t, out, "when", "the check column names the condition")
+
+	// The failure a skip set aside is a second, named row.
+	res.EvalResults = append(res.EvalResults, &papi.EvalResult{
+		Id: "evidence", Status: papi.StatusSKIP,
+		Assessment: &papi.Assessment{Message: "Evidence not verified: attestation identity validation failed"},
+		Error:      &papi.Error{Message: "attestation identity validation failed"},
+	})
+	buf.Reset()
+	_, err = New().resultTable(res).WriteTo(&buf)
+	require.NoError(t, err)
+	out = buf.String()
+	require.Contains(t, out, "evidence")
+	require.Contains(t, out, "Evidence not verified")
+	require.Contains(t, out, "none evaluated, policy skipped")
+}
+
+// TestResultTableCheckIDs checks that a policy without controls still names
+// its checks: by tenet id, or by position for a tenet without one.
+func TestResultTableCheckIDs(t *testing.T) {
+	t.Parallel()
+	res := &papi.Result{
+		Status: papi.StatusPASS,
+		Policy: &papi.PolicyRef{Id: "sbom"},
+		Meta:   &papi.Meta{Description: "SBOM checks"},
+		EvalResults: []*papi.EvalResult{
+			{Id: "has-packages", Status: papi.StatusPASS, Assessment: &papi.Assessment{Message: "SBOM lists packages"}},
+			{Status: papi.StatusPASS, Assessment: &papi.Assessment{Message: "SBOM has an author"}},
+		},
+	}
+	var buf bytes.Buffer
+	_, err := New().resultTable(res).WriteTo(&buf)
+	require.NoError(t, err)
+	out := buf.String()
+	require.Contains(t, out, "has-packages")
+	require.Contains(t, out, "#1", "a tenet without an id is named by its position")
+	require.Contains(t, out, "2 (2 PASS)", "the tenet count is unchanged for an evaluated policy")
 }
