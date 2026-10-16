@@ -74,6 +74,9 @@ func TestWhenPolicy(t *testing.T) {
 			p.Context = envContext("dev")
 			return p
 		}(), papi.StatusSKIP, ""},
+		// The engine is always newer than v0.0.1, a release or a development build.
+		{"reads-the-engine", gatedPolicy("engine-yes", "ampel.atLeast('v0.0.1')"), papi.StatusPASS, ""},
+		{"engine-condition-false-skips", gatedPolicy("engine-no", "ampel.olderThan('v0.0.1')"), papi.StatusSKIP, ""},
 		{"non-boolean-errors", gatedPolicy("str", "'yes'"), "", "must yield a boolean"},
 		{"undeclared-context-errors", gatedPolicy("undecl", "context.nope == 'x'"), "", "condition"},
 		{"unknown-runtime-errors", &papi.Policy{

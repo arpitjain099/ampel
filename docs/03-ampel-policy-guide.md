@@ -489,7 +489,7 @@ decided before any of the block's policies run.
 | --- | --- | --- |
 | `context` | yes | The resolved context values in scope: the policy's own, plus those inherited from the `common` block of its PolicySet and PolicyGroup. Every value the expression reads must be declared there; reading an undeclared one fails the evaluation. |
 | `subject` | yes | The subject the tenets evaluate: `name`, `uri`, `digest`. For a policy with a chain this is the subject the chain resolved to, not the one the verification was asked about. |
-| runtime plugins | yes | `semver`, `hasher`, `url`, `purl`, `github`, ... |
+| runtime plugins | yes | `semver`, `hasher`, `url`, `purl`, `github`, ... and `ampel`, the engine's own data: `ampel.atLeast('v1.4.0')` makes a policy apply only to engines new enough for it. |
 | `predicates`, `predicate` | yes | The evidence the policy collected: the attestations about the subject that the signer identities admitted, narrowed to the policy's `predicates.types` when it declares any. `predicate` is the first of them. An empty list means no evidence was found. |
 | `outputs` | **no** | Outputs belong to tenets. |
 
