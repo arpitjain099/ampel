@@ -228,3 +228,9 @@ func (d *Driver) RenderResultSet(w io.Writer, rset *papi.ResultSet) error {
 	}
 	return err
 }
+
+// SupportsStatus reports that any status can be rendered: the output names
+// the status and explains it, whatever it is.
+func (d *Driver) SupportsStatus(status string) bool {
+	return status != ""
+}

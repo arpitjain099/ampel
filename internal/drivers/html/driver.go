@@ -65,3 +65,9 @@ func (d *Driver) RenderResultGroup(w io.Writer, result *papi.ResultGroup) error 
 	t.RenderHTML()
 	return nil
 }
+
+// SupportsStatus reports that any status can be rendered: the output names
+// the status and explains it, whatever it is.
+func (d *Driver) SupportsStatus(status string) bool {
+	return status != ""
+}

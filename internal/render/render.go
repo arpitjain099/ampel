@@ -74,10 +74,18 @@ func NewEngine() *Engine {
 	}
 }
 
+// Driver renders evaluation results in one output format. Beyond rendering,
+// a driver says which evaluation statuses it can render: a VSA has no way
+// to say SKIP, a terminal table renders anything. A caller that may answer
+// a status asks before evaluating, so a run never ends in results that
+// cannot be rendered.
 type Driver interface {
 	RenderResultSet(w io.Writer, status *papi.ResultSet) error
 	RenderResult(w io.Writer, status *papi.Result) error
 	RenderResultGroup(w io.Writer, status *papi.ResultGroup) error
+	// SupportsStatus reports whether results with the status can be
+	// rendered.
+	SupportsStatus(status string) bool
 }
 
 type Engine struct {
@@ -92,6 +100,11 @@ func (e *Engine) SetDriver(format string) error {
 	}
 	e.Driver = d
 	return nil
+}
+
+// SupportsStatus calls the method of the same name of the configured driver
+func (e *Engine) SupportsStatus(status string) bool {
+	return e.Driver.SupportsStatus(status)
 }
 
 // RenderResultSet calls the method of the same name of the configured driver

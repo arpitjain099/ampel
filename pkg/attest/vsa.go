@@ -44,20 +44,23 @@ const (
 // ErrSkippedResult is returned when asked to attest a verification summary
 // for a result whose policies did not apply to the subject. Nothing was
 // verified, so there is no PASSED or FAILED to report.
-var ErrSkippedResult = errors.New("skipped results cannot be attested: the policy did not apply to the subject")
+var ErrSkippedResult = errors.New(
+	"skipped results cannot be attested as a VSA or SVR, nothing was verified: " +
+		"verify without allowing skips to attest the failure, or attest in the ampel format to record the skip",
+)
 
-func (a *ResultsAttester) attestVSA(w io.Writer, results papi.Results, o attestOptions) error {
+func attestVSA(w io.Writer, results papi.Results, o Options) error {
 	switch r := results.(type) {
 	case *papi.Result:
 		if r.GetStatus() == papi.StatusSKIP {
 			return fmt.Errorf("policy %q: %w", r.GetPolicy().GetId(), ErrSkippedResult)
 		}
-		return a.writeVSAFromResult(w, r, o)
+		return writeVSAFromResult(w, r, o)
 	case *papi.ResultSet:
 		if r.GetStatus() == papi.StatusSKIP {
 			return fmt.Errorf("policy set %q: %w", r.GetPolicySet().GetId(), ErrSkippedResult)
 		}
-		return a.writeVSAFromResultSet(w, r, o)
+		return writeVSAFromResultSet(w, r, o)
 	case *papi.ResultGroup:
 		return errors.New("rendering result groups as VSAs is not supported yet")
 	default:
@@ -65,7 +68,7 @@ func (a *ResultsAttester) attestVSA(w io.Writer, results papi.Results, o attestO
 	}
 }
 
-func (a *ResultsAttester) writeVSAFromResultSet(w io.Writer, set *papi.ResultSet, o attestOptions) error {
+func writeVSAFromResultSet(w io.Writer, set *papi.ResultSet, o Options) error {
 	vsaData := &v1.VerificationSummary{
 		Verifier: &v1.VerificationSummary_Verifier{
 			Id: ampelVerifierID,
@@ -141,10 +144,10 @@ func (a *ResultsAttester) writeVSAFromResultSet(w io.Writer, set *papi.ResultSet
 	if verifiedSomeSlsa {
 		vsaData.SlsaVersion = slsaVersion
 	}
-	return a.writeVSAStatement(w, set.GetSubject(), vsaData, o)
+	return writeVSAStatement(w, set.GetSubject(), vsaData, o)
 }
 
-func (a *ResultsAttester) writeVSAFromResult(w io.Writer, result *papi.Result, o attestOptions) error {
+func writeVSAFromResult(w io.Writer, result *papi.Result, o Options) error {
 	vsaData := &v1.VerificationSummary{
 		Verifier: &v1.VerificationSummary_Verifier{
 			Id: ampelVerifierID,
@@ -198,13 +201,13 @@ func (a *ResultsAttester) writeVSAFromResult(w io.Writer, result *papi.Result, o
 	if verifiedSomeSlsa {
 		vsaData.SlsaVersion = slsaVersion
 	}
-	return a.writeVSAStatement(w, result.GetSubject(), vsaData, o)
+	return writeVSAStatement(w, result.GetSubject(), vsaData, o)
 }
 
 // writeVSAStatement wraps the populated VSA predicate in an in-toto
-// statement and routes it through a.writeStatement so signing and
+// statement and routes it through WriteStatement so signing and
 // pretty-print dispatch stay centralized.
-func (a *ResultsAttester) writeVSAStatement(w io.Writer, subject attestation.Subject, att *v1.VerificationSummary, o attestOptions) error {
+func writeVSAStatement(w io.Writer, subject attestation.Subject, att *v1.VerificationSummary, o Options) error {
 	vsaJsonData, err := protojson.Marshal(att)
 	if err != nil {
 		return fmt.Errorf("marshaling vsa: %w", err)
@@ -225,7 +228,7 @@ func (a *ResultsAttester) writeVSAStatement(w io.Writer, subject attestation.Sub
 		}),
 	)
 
-	return a.writeStatement(w, statement, o)
+	return WriteStatement(w, statement, o)
 }
 
 // resultStringToSLSAResult translates ampel evaluation status strings

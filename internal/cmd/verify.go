@@ -315,6 +315,11 @@ func (o *verifyOptions) Validate() error {
 		errs = append(errs, errors.New("no attestation sources specified (collectors or files)"))
 	}
 
+	// Every status the run may answer must be one its outputs can render
+	// and attest; the drivers say which they can. Asking now keeps a run
+	// from ending in results that cannot be written.
+	errs = append(errs, o.checkOutputsRenderStatuses()...)
+
 	if o.Sign {
 		_, stdoutIsAttest := attestFormatFor(o.Format)
 		if !o.AttestResults && !stdoutIsAttest {
@@ -326,6 +331,40 @@ func (o *verifyOptions) Validate() error {
 	}
 
 	return errors.Join(errs...)
+}
+
+// possibleStatuses lists the statuses a run may answer at the root: a
+// verdict always, and SKIP when the options allow it.
+func (o *verifyOptions) possibleStatuses() []string {
+	statuses := []string{papi.StatusPASS, papi.StatusFAIL, papi.StatusSOFTFAIL}
+	if o.AllowSkip {
+		statuses = append(statuses, papi.StatusSKIP)
+	}
+	return statuses
+}
+
+// checkOutputsRenderStatuses asks the output driver and, when results are
+// attested, the attestation format whether they can render every status the
+// run may answer, and returns an error for each one they cannot.
+func (o *verifyOptions) checkOutputsRenderStatuses() []error {
+	errs := []error{}
+	driver := render.GetDriverBytType(o.Format)
+	attester := attest.New()
+	for _, status := range o.possibleStatuses() {
+		if driver != nil && !driver.SupportsStatus(status) {
+			errs = append(errs, fmt.Errorf(
+				"--format=%s cannot render a %s result, which this run may produce (pick a format that can, or drop --allow-skip)",
+				o.Format, status,
+			))
+		}
+		if o.AttestResults && !attester.SupportsStatus(o.AttestFormat, status) {
+			errs = append(errs, fmt.Errorf(
+				"--attest-format=%s cannot record a %s result, which this run may produce (pick a format that can, or drop --allow-skip)",
+				o.AttestFormat, status,
+			))
+		}
+	}
+	return errs
 }
 
 func addVerify(parentCmd *cobra.Command) {

@@ -8,6 +8,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -456,6 +461,47 @@ func TestAttestTo_SkippedResult(t *testing.T) {
 			}
 		})
 	}
+	t.Run("formats-say-which-statuses-they-record", func(t *testing.T) {
+		a := New()
+		for _, tc := range []struct {
+			format, status string
+			want           bool
+		}{
+			{"ampel", papi.StatusPASS, true},
+			{"ampel", papi.StatusFAIL, true},
+			{"ampel", papi.StatusSOFTFAIL, true},
+			{"ampel", papi.StatusSKIP, true},
+			{"", papi.StatusSKIP, true},
+			{"vsa", papi.StatusPASS, true},
+			{"vsa", papi.StatusFAIL, true},
+			{"vsa", papi.StatusSOFTFAIL, true},
+			{"vsa", papi.StatusSKIP, false},
+			{"svr", papi.StatusPASS, true},
+			{"svr", papi.StatusSKIP, false},
+			{"nope", papi.StatusPASS, false},
+			{"ampel", "", false},
+		} {
+			if got := a.SupportsStatus(tc.format, tc.status); got != tc.want {
+				t.Errorf("SupportsStatus(%q, %q) = %v, want %v", tc.format, tc.status, got, tc.want)
+			}
+		}
+	})
+	t.Run("a-refused-attestation-leaves-no-file", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "results.vsa.json")
+		err := New().AttestToFile(path, skipped, WithFormat("vsa"))
+		if !errors.Is(err, ErrSkippedResult) {
+			t.Fatalf("expected ErrSkippedResult, got %v", err)
+		}
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("a refused attestation must leave no file, stat: %v", err)
+		}
+		if err := New().AttestToFile(path, skipped, WithFormat("ampel")); err != nil {
+			t.Fatalf("ampel format: %v", err)
+		}
+		if st, err := os.Stat(path); err != nil || st.Size() == 0 {
+			t.Errorf("the ampel attestation must be written: %v", err)
+		}
+	})
 	t.Run("ampel-records-the-skip", func(t *testing.T) {
 		var buf bytes.Buffer
 		if err := New().AttestTo(&buf, skipped, WithFormat("ampel")); err != nil {
@@ -465,4 +511,44 @@ func TestAttestTo_SkippedResult(t *testing.T) {
 			t.Errorf("the ampel attestation must carry the SKIP status: %s", buf.String())
 		}
 	})
+}
+
+// passOnly is a custom format that records only passing results.
+type passOnly struct{ written int }
+
+func (f *passOnly) Attest(w io.Writer, results papi.Results, opts *Options) error {
+	if !f.SupportsStatus(results.GetStatus()) {
+		return fmt.Errorf("pass-only cannot record %s", results.GetStatus())
+	}
+	f.written++
+	_, err := fmt.Fprintf(w, "%s pretty=%v\n", results.GetStatus(), opts.PrettyPrint)
+	return err
+}
+
+func (f *passOnly) SupportsStatus(status string) bool { return status == papi.StatusPASS }
+
+// TestRegisterFormat checks that a custom format is written through the
+// attester like the built-in ones and answers for its own statuses.
+func TestRegisterFormat(t *testing.T) {
+	a := New()
+	custom := &passOnly{}
+	a.RegisterFormat("pass-only", custom)
+
+	if got := a.Formats(); !slices.Equal(got, []string{"ampel", "pass-only", "svr", "vsa"}) {
+		t.Fatalf("formats = %v", got)
+	}
+	if !a.SupportsStatus("pass-only", papi.StatusPASS) || a.SupportsStatus("pass-only", papi.StatusFAIL) {
+		t.Error("the custom format must answer for its own statuses")
+	}
+
+	var buf bytes.Buffer
+	if err := a.AttestTo(&buf, &papi.Result{Status: papi.StatusPASS}, WithFormat("pass-only"), WithPrettyPrint(false)); err != nil {
+		t.Fatalf("attesting: %v", err)
+	}
+	if buf.String() != "PASS pretty=false\n" || custom.written != 1 {
+		t.Errorf("custom format output = %q, written %d", buf.String(), custom.written)
+	}
+	if err := a.AttestTo(&buf, &papi.Result{Status: papi.StatusFAIL}, WithFormat("pass-only")); err == nil {
+		t.Error("the custom format must refuse what it cannot record")
+	}
 }

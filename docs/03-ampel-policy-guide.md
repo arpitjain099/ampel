@@ -566,12 +566,15 @@ result attestation.
 
 `ampel verify --allow-skip` restores the skipped answer: the root reports
 `SKIP` and the command exits 0, like on a `PASS`, for pipelines that treat
-"nothing applied" as acceptable. A skipped root cannot be attested as a VSA
-or SVR: `--format vsa` (or `svr`) fails with "skipped results cannot be
-attested", because no evaluation took place and there is no PASSED or FAILED
-to report. Embedders of the verifier have the same choice through the
-`AllowSkip` verification option, and can recognize the failure with
-`verifier.AllSkipped`.
+"nothing applied" as acceptable. The ampel results attestation records the
+skip; a VSA or SVR cannot, since neither has anything but PASSED and FAILED
+to say. Every output format reports which statuses it can render, and
+`ampel verify` asks before evaluating: `--allow-skip` refuses to run with
+`--format vsa` or `svr`, or with `--attest-results --attest-format vsa` or
+`svr`. To attest in those formats, verify without `--allow-skip` and a root
+that verified nothing is attested as a failure. Embedders of the verifier have the same choice
+through the `AllowSkip` verification option, and can recognize the failure
+with `verifier.AllSkipped`.
 
 ## Signer Identities
 
