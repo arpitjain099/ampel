@@ -13,6 +13,7 @@ import (
 	"io"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/carabiner-dev/hasher"
 	"github.com/carabiner-dev/osv/go/osv"
@@ -130,6 +131,18 @@ func osvPackageToPurl(pkg *osv.Result_Package_Info) string {
 		return ""
 	}
 	return fmt.Sprintf("pkg:%s/%s@%s%s", ptype, namespacename, gov, version)
+}
+
+// statementDate returns the most recent date in a statement. Both date fields
+// are optional in OpenVEX and extractStatements can only fill them in from the
+// document when the document itself has them, so a statement can reach the
+// comparison below with no dates at all. Callers get nil in that case.
+func statementDate(s *openvex.Statement) *time.Time {
+	d := s.Timestamp
+	if s.LastUpdated != nil && (d == nil || s.LastUpdated.After(*d)) {
+		d = s.LastUpdated
+	}
+	return d
 }
 
 func normalizeVulnIds(record *osv.Record) (main openvex.VulnerabilityID, aliases []openvex.VulnerabilityID) {
@@ -270,19 +283,12 @@ func (t *Transformer) ApplyVEX(
 						continue
 					}
 
-					d := s.Timestamp
-					if s.LastUpdated != nil {
-						if s.LastUpdated.After(*d) {
-							d = s.LastUpdated
-						}
-					}
+					d := statementDate(s)
+					st := statementDate(statement)
 
-					st := statement.Timestamp
-					if statement.LastUpdated != nil {
-						st = statement.LastUpdated
-					}
-
-					if d.After(*st) {
+					// An undated statement cannot be ordered, so it never
+					// displaces one that carries a date.
+					if d != nil && (st == nil || d.After(*st)) {
 						statement = s
 					}
 				}

@@ -10,7 +10,9 @@ import (
 	"github.com/carabiner-dev/osv/go/osv"
 	gointoto "github.com/in-toto/attestation/go/v1"
 	"github.com/policylabs/attestation"
+	"github.com/policylabs/collector/predicate/generic"
 	"github.com/policylabs/collector/predicate/openvex"
+	aosv "github.com/policylabs/collector/predicate/osv"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/encoding/protojson"
 )
@@ -67,6 +69,53 @@ func TestApplyVEX(t *testing.T) {
 
 			require.Len(t, osvReport.GetResults(), 1)
 			require.Len(t, osvReport.GetResults()[0].Packages, tc.expectedPackages)
+		})
+	}
+}
+
+func TestMutateUntimestampedStatements(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name             string
+		vex              string
+		expectedPackages int
+	}{
+		// Control: the same path with a document that carries dates. If this
+		// case ever fails, the harness is broken, not the date handling.
+		{name: "dated document", vex: "testdata/CVE-2025-27144.openvex.json", expectedPackages: 1},
+		{name: "undated document", vex: "testdata/no-timestamp.openvex.json", expectedPackages: 1},
+		{name: "only last_updated set", vex: "testdata/last-updated-only.openvex.json", expectedPackages: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			data, err := os.ReadFile("testdata/osv.json")
+			require.NoError(t, err)
+			results := &osv.Results{}
+			require.NoError(t, protojson.UnmarshalOptions{
+				DiscardUnknown: true,
+			}.Unmarshal(data, results))
+
+			vexPredicate := vexPathsToPredicates(t, []string{tc.vex})[0]
+
+			xform := Transformer{}
+			_, preds, err := xform.Mutate(
+				&gointoto.ResourceDescriptor{
+					Digest: map[string]string{
+						gointoto.AlgorithmSHA256.String(): "9579c854c652497e48a7bfc278149b12bdd0e3c2189f0c3b42bda4366cf9b15d",
+					},
+				},
+				[]attestation.Predicate{
+					&generic.Predicate{Type: aosv.PredicateType, Parsed: results, Data: data},
+					vexPredicate,
+				},
+			)
+			require.NoError(t, err)
+			require.Len(t, preds, 1)
+
+			report, ok := preds[0].GetParsed().(*osv.Results)
+			require.True(t, ok)
+			require.Len(t, report.GetResults(), 1)
+			require.Len(t, report.GetResults()[0].Packages, tc.expectedPackages)
 		})
 	}
 }
